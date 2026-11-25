@@ -33,6 +33,7 @@ Copy `.env.example` to `.env` (if it does not exist yet) and fill in the real va
 - `GEMINI_API_KEY`: Google Gemini API key for the catalog assistant. Leave it empty to disable the assistant; the product endpoints keep working.
 - `GEMINI_MODEL` (optional): Gemini model for the catalog assistant. Defaults to `gemini-3.5-flash-lite`.
 - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET` (optional): enable the Telegram bot. Leave them empty to disable it; the rest of the API keeps working.
+- `TELEGRAM_ADMIN_IDS` (optional): comma-separated Telegram user ids allowed to use the bot's admin commands (see [Admin commands](#admin-commands-telegram_admin_ids)). Empty or missing means nobody is an admin.
 - `SLACK_WEBHOOK_URL` (optional): Slack Incoming Webhook URL that receives an alert for every new product. Leave it empty to disable the alerts; the API behaves exactly as before.
 
 > **Never commit `.env`.** It holds your database password and is already listed in `.gitignore`.
@@ -123,7 +124,10 @@ The bot answers catalog questions in Telegram with the same assistant as `POST /
 
 Behavior:
 
-- `/start` and `/help` (and any other command) reply with usage instructions.
+- `/start`, `/help` and `/ayuda` reply with usage instructions. Admins also see the admin commands; everyone else does not.
+- `/productos` lists the products as `#id Name: price · N en stock` (`agotado` when out of stock), ordered by id, without calling Gemini. A long list is cut to fit Telegram's 4096-character limit and ends with `… y N más.`.
+- `/id` replies with your Telegram user id. Anyone can use it.
+- Any other command (including `/agregar` and `/editar` for now) replies that it is unknown or not available yet.
 - Any other text is a catalog question, with the same limits as the API (1-500 characters). Answers are plain text.
 - The webhook acknowledges at once and sends the answer from a background task, so Telegram does not redeliver the update while Gemini is thinking.
 - Duplicate deliveries are ignored: the API remembers the last 1000 `update_id` values and acknowledges a repeated one without replying again. Limitation: this record lives in memory, so it is cleared when the service restarts or sleeps (Render free tier). It covers the common case, a redelivery within the same process lifetime, not every case.
@@ -133,6 +137,20 @@ Behavior:
 - If `TELEGRAM_BOT_TOKEN` or `TELEGRAM_WEBHOOK_SECRET` is missing, the webhook returns `503` and the rest of the API keeps working.
 - Render's free tier sleeps after 15 minutes without traffic. The first message after that wakes the server, so its reply can take about a minute.
 - If you rotate the token or the secret, update Render and run `setWebhook` again.
+
+### Admin commands (`TELEGRAM_ADMIN_IDS`)
+
+`TELEGRAM_ADMIN_IDS` is a comma-separated list of Telegram **user** ids, for example `123456789,987654321`. Only those users can run admin commands.
+
+1. Open your bot and send `/id`. It replies with your user id.
+2. Put it in `TELEGRAM_ADMIN_IDS` in Render -> Environment (and in `.env` for local runs), then redeploy.
+3. Send `/ayuda`: the admin commands now appear in the help text.
+
+Rules:
+
+- The list holds **sender** ids (the author of a message), never chat ids. In a group, only the listed users are admins; the group's own id gives nobody any rights.
+- It fails closed: if the variable is empty or missing, nobody is an admin. Spaces and empty items are ignored, and items that are not positive integers are ignored too.
+- Admin commands are documented in `/ayuda` (`/agregar` and `/editar`). Both are implemented in a later change; until then the bot answers that they are not available.
 
 ## Slack alerts
 
@@ -158,6 +176,6 @@ Create a **Web Service** from the GitHub repository that contains this folder:
 | Build Command     | `pip install -r requirements.txt`                  |
 | Start Command     | `uvicorn main:app --host 0.0.0.0 --port $PORT`     |
 | Health Check Path | `/health`                                          |
-| Environment vars  | `DATABASE_URL`, `ALLOWED_ORIGINS`, `GEMINI_API_KEY`, optional `GEMINI_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, optional `SLACK_WEBHOOK_URL` (same as `.env`) |
+| Environment vars  | `DATABASE_URL`, `ALLOWED_ORIGINS`, `GEMINI_API_KEY`, optional `GEMINI_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, optional `TELEGRAM_ADMIN_IDS`, optional `SLACK_WEBHOOK_URL` (same as `.env`) |
 
 Render reads `.python-version` to use Python 3.13.

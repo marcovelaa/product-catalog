@@ -9,6 +9,7 @@ os.environ["ALLOWED_ORIGINS"] = "http://localhost:5173"
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 os.environ["TELEGRAM_WEBHOOK_SECRET"] = ""
+os.environ["TELEGRAM_ADMIN_IDS"] = ""
 os.environ["SLACK_WEBHOOK_URL"] = ""
 
 import pytest  # noqa: E402

@@ -66,6 +66,9 @@ TelegramAssistant = Annotated[
 TelegramRecentUpdates = Annotated[
     telegram_bot.RecentUpdates, Depends(telegram_bot.get_recent_updates)
 ]
+TelegramAdminIds = Annotated[
+    frozenset[int], Depends(telegram_bot.get_telegram_admin_ids)
+]
 
 SlackNotifier = Annotated[
     slack_alerts.SlackNotifier | None, Depends(slack_alerts.get_slack_notifier)
@@ -162,6 +165,7 @@ def telegram_webhook(
     sender: TelegramSender,
     assistant: TelegramAssistant,
     recent_updates: TelegramRecentUpdates,
+    admin_ids: TelegramAdminIds,
 ) -> dict[str, bool]:
     """Receive a Telegram update and acknowledge it at once.
 
@@ -181,31 +185,49 @@ def telegram_webhook(
         return TELEGRAM_ACK  # Edited messages, stickers, joins, other update types.
     chat_id = message.chat.id
 
-    interpreted = telegram_bot.interpret_text(message.text)
+    interpreted = telegram_bot.interpret_text(
+        message.text, sender_id=message.sender_id, admin_ids=admin_ids
+    )
     if isinstance(interpreted, telegram_bot.Reply):
         background_tasks.add_task(telegram_bot.send_safely, sender, chat_id, interpreted.text)
         return TELEGRAM_ACK
 
-    try:
-        products = load_catalog_snapshot(db)
-    except SQLAlchemyError as error:
-        logger.warning(
-            "Catalog query failed for Telegram (chat_id=%s, error=%s)",
-            chat_id, type(error).__name__,
-        )
+    products = read_catalog_for_telegram(db, chat_id)
+    if products is None:
         background_tasks.add_task(
             telegram_bot.send_safely, sender, chat_id, telegram_bot.UNAVAILABLE_TEXT
         )
         return TELEGRAM_ACK
-    finally:
-        # Release the pooled connection before the background LLM call.
-        db.rollback()
+    if isinstance(interpreted, telegram_bot.ListProducts):
+        background_tasks.add_task(
+            telegram_bot.send_safely,
+            sender, chat_id, telegram_bot.format_product_list(products),
+        )
+        return TELEGRAM_ACK
 
     background_tasks.add_task(
         telegram_bot.answer_question,
         sender, assistant, chat_id, interpreted.question, products,
     )
     return TELEGRAM_ACK
+
+
+def read_catalog_for_telegram(db: Session, chat_id: int) -> list[CatalogProduct] | None:
+    """Snapshot the catalog for a bot reply; None if the database failed.
+
+    The connection is released before returning, so a slow reply (the LLM call)
+    never holds a pooled connection.
+    """
+    try:
+        return load_catalog_snapshot(db)
+    except SQLAlchemyError as error:
+        logger.warning(
+            "Catalog query failed for Telegram (chat_id=%s, error=%s)",
+            chat_id, type(error).__name__,
+        )
+        return None
+    finally:
+        db.rollback()
 
 
 def load_catalog_snapshot(db: Session) -> list[CatalogProduct]:

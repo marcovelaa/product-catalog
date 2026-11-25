@@ -20,7 +20,7 @@ from typing import Annotated, Protocol
 
 import httpx
 from fastapi import Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import schemas
 from catalog_assistant import (
@@ -29,6 +29,7 @@ from catalog_assistant import (
     AssistantQuotaExceeded,
     CatalogAssistant,
     CatalogItem,
+    CatalogProduct,
     get_catalog_assistant,
 )
 
@@ -40,7 +41,7 @@ SECRET_TOKEN_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 TELEGRAM_API_BASE = "https://api.telegram.org"
 SEND_TIMEOUT_SECONDS = 10.0
 MAX_MESSAGE_LENGTH = 4096  # Bot API limit for sendMessage text.
-KNOWN_COMMANDS = frozenset({"start", "help"})
+HELP_COMMANDS = frozenset({"start", "help", "ayuda"})
 
 MAX_RECENT_UPDATES = 1000
 
@@ -51,10 +52,28 @@ WELCOME_TEXT = (
     "Pregúntame lo que quieras sobre precios y existencias, por ejemplo:\n"
     "- ¿Tienen teclados por menos de 100?\n"
     "- ¿Qué productos están agotados?\n\n"
+    "Comandos:\n"
+    "/productos - lista los productos con su id, precio y existencias\n"
+    "/id - muestra tu ID de usuario de Telegram\n\n"
     "Envía preguntas de 1 a 500 caracteres. Respondo solo con la información "
     "actual del catálogo. Si el servidor lleva un rato sin uso se suspende, así "
     "que la primera respuesta puede tardar cerca de un minuto."
 )
+ADMIN_HELP_SECTION = (
+    "Comandos de administrador:\n"
+    "/agregar Nombre; precio; stock; url opcional\n"
+    "/editar <id> campo=valor; campo=valor\n"
+    "Los campos de /editar son: nombre, precio, stock, imagen. "
+    "Separa los valores con punto y coma (;), así el precio puede llevar coma "
+    "decimal, por ejemplo 25,50."
+)
+UNKNOWN_COMMAND_TEXT = (
+    "Ese comando no existe o aún no está disponible. "
+    "Envía /ayuda para ver los comandos disponibles."
+)
+NO_PRODUCTS_TEXT = "Todavía no hay productos en el catálogo."
+ID_UNAVAILABLE_TEXT = "No puedo ver tu ID de usuario en este mensaje, así que no está disponible."
+PRODUCT_LIST_MORE_TEXT = "… y {count} más. Pregunta por uno concreto."
 INVALID_QUESTION_TEXT = "Por favor, envía una pregunta de entre 1 y 500 caracteres."
 BUSY_TEXT = "El asistente está ocupado en este momento. Inténtalo de nuevo en un minuto."
 UNAVAILABLE_TEXT = (
@@ -76,9 +95,22 @@ class TelegramChat(BaseModel):
     id: int
 
 
+class TelegramUser(BaseModel):
+    id: int
+
+
 class TelegramMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     chat: TelegramChat
+    # `from` is a Python keyword. It is absent on channel posts.
+    from_user: TelegramUser | None = Field(default=None, alias="from")
     text: str | None = None
+
+    @property
+    def sender_id(self) -> int | None:
+        """The author's user id; this, never the chat id, identifies an admin."""
+        return self.from_user.id if self.from_user else None
 
 
 class TelegramUpdate(BaseModel):
@@ -156,6 +188,31 @@ def get_telegram_config() -> TelegramConfig:
 Config = Annotated[TelegramConfig, Depends(get_telegram_config)]
 
 
+def parse_admin_ids(raw: str | None) -> frozenset[int]:
+    """Parse a comma-separated list of Telegram user ids; junk items are ignored.
+
+    Fails closed: a missing or empty value, or one with no valid id, means nobody
+    is an admin. Only plain positive integers count (user ids are positive; a
+    group chat id is negative, so it can never be listed by mistake).
+    """
+    ids: set[int] = set()
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if item.isascii() and item.isdigit() and int(item) > 0:
+            ids.add(int(item))
+    return frozenset(ids)
+
+
+def get_telegram_admin_ids() -> frozenset[int]:
+    """Sender ids allowed to use admin commands (TELEGRAM_ADMIN_IDS), read per request."""
+    return parse_admin_ids(os.getenv("TELEGRAM_ADMIN_IDS"))
+
+
+def is_admin(sender_id: int | None, admin_ids: frozenset[int]) -> bool:
+    """True only for a known sender id on the allow-list."""
+    return sender_id is not None and sender_id in admin_ids
+
+
 async def verified_update(
     request: Request,
     config: Config,
@@ -186,16 +243,85 @@ class Reply:
     text: str
 
 
-def interpret_text(text: str) -> Reply | schemas.CatalogQuestion:
-    """Map a chat message to a canned reply or a validated catalog question."""
-    if text.startswith("/"):
-        # "/start", "/help@MyBot", "/start payload"; any command gets the usage text.
-        return Reply(WELCOME_TEXT)
+@dataclass(frozen=True, slots=True)
+class ListProducts:
+    """The sender asked for the product list (needs a database read)."""
+
+
+def parse_command(text: str) -> tuple[str, str] | None:
+    """Split "/cmd@Bot payload" into ("cmd", "payload"); None if it is not a command.
+
+    The name is lowercased and loses any "@BotName" suffix; the payload is trimmed.
+    """
+    if not text.startswith("/"):
+        return None
+    head, _, payload = text.partition(" ")
+    name = head[1:].partition("@")[0].lower()
+    return name, payload.strip()
+
+
+def help_text(admin: bool) -> str:
+    """Usage text; the admin commands are shown to admins only."""
+    return f"{WELCOME_TEXT}\n\n{ADMIN_HELP_SECTION}" if admin else WELCOME_TEXT
+
+
+def interpret_text(
+    text: str,
+    sender_id: int | None = None,
+    admin_ids: frozenset[int] = frozenset(),
+) -> Reply | ListProducts | schemas.CatalogQuestion:
+    """Map a chat message to a canned reply, a command or a validated catalog question."""
+    command = parse_command(text)
+    if command is not None:
+        name, _payload = command
+        if name in HELP_COMMANDS:
+            return Reply(help_text(is_admin(sender_id, admin_ids)))
+        if name == "id":
+            if sender_id is None:
+                return Reply(ID_UNAVAILABLE_TEXT)
+            return Reply(f"Tu ID de usuario de Telegram es {sender_id}.")
+        if name == "productos":
+            return ListProducts()
+        # Includes /agregar and /editar until they are implemented.
+        return Reply(UNKNOWN_COMMAND_TEXT)
     try:
         # Same limits as POST /api/v1/catalog/ask.
         return schemas.CatalogQuestion(question=text)
     except ValidationError:
         return Reply(INVALID_QUESTION_TEXT)
+
+
+def format_price(price: float) -> str:
+    """Two decimals and a decimal comma, like the Spanish UI: 25,50."""
+    return f"{price:.2f}".replace(".", ",")
+
+
+def format_stock(stock: int) -> str:
+    return f"{stock} en stock" if stock > 0 else "agotado"
+
+
+def format_product_list(products: Sequence[CatalogProduct]) -> str:
+    """One `#id Name: price · N en stock` line per product, within Telegram's limit."""
+    if not products:
+        return NO_PRODUCTS_TEXT
+    lines = [
+        f"#{product.id} {product.name}: {format_price(product.price)} · "
+        f"{format_stock(product.stock)}"
+        for product in products
+    ]
+    if len("\n".join(lines)) <= MAX_MESSAGE_LENGTH:
+        return "\n".join(lines)
+    # Reserve room for the footer, sized for the largest possible count.
+    budget = MAX_MESSAGE_LENGTH - len(PRODUCT_LIST_MORE_TEXT.format(count=len(lines))) - 1
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        used += len(line) + (1 if kept else 0)
+        if used > budget:
+            break
+        kept.append(line)
+    kept.append(PRODUCT_LIST_MORE_TEXT.format(count=len(lines) - len(kept)))
+    return "\n".join(kept)
 
 
 # --- Port and adapter ------------------------------------------------------------
