@@ -24,14 +24,14 @@ describe('buildStarterQuestions', () => {
     ])
 
     expect(questions).toEqual([
-      'Which products are in stock right now?',
-      'How many Wireless Mouse units are left?',
-      'Is the Mechanical Keyboard available?',
+      '¿Qué productos hay en stock ahora mismo?',
+      '¿Cuántas unidades quedan de Wireless Mouse?',
+      '¿Está disponible el producto Mechanical Keyboard?',
     ])
   })
 
   it('asks about the most expensive product when nothing is sold out', () => {
     const questions = buildStarterQuestions([product(1, 'Mouse', 10, 1), product(2, 'Stand', 40, 2)])
-    expect(questions[2]).toBe('What does the Stand cost?')
+    expect(questions[2]).toBe('¿Cuánto cuesta el producto Stand?')
   })
 })

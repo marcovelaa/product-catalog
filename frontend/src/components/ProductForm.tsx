@@ -45,17 +45,17 @@ export function ProductForm({
 
   return (
     <section id="add-product" className="add" aria-labelledby="add-title">
-      <h2 id="add-title" className="section-title">Add a product</h2>
+      <h2 id="add-title" className="section-title">Añadir un producto</h2>
 
       <form className="add__form" noValidate aria-busy={isSubmitting} onSubmit={handleSubmit}>
-        <Field {...field} name="name" label="Name" required autoComplete="off" />
+        <Field {...field} name="name" label="Nombre" required autoComplete="off" />
 
         <div className="add__pair">
           <Field
             {...field}
             name="price"
-            label="Price"
-            hint="In US dollars, like 25.50."
+            label="Precio"
+            hint="Por ejemplo 25,50."
             required
             inputMode="decimal"
             autoComplete="off"
@@ -64,7 +64,7 @@ export function ProductForm({
             {...field}
             name="stock"
             label="Stock"
-            hint="Units on hand. Empty means 0."
+            hint="Unidades disponibles. Vacío equivale a 0."
             inputMode="numeric"
             autoComplete="off"
           />
@@ -73,8 +73,8 @@ export function ProductForm({
         <Field
           {...field}
           name="imageUrl"
-          label="Image link (optional)"
-          hint="Starts with http:// or https://."
+          label="Enlace de imagen (opcional)"
+          hint="Empieza con http:// o https://."
           type="url"
           inputMode="url"
           autoComplete="off"
@@ -87,7 +87,7 @@ export function ProductForm({
             <p>{error}</p>
             {retryable && (
               <button type="button" className="btn btn--ink" onClick={onRetry} disabled={isSubmitting}>
-                Try again
+                Intentar de nuevo
               </button>
             )}
           </div>
@@ -95,13 +95,13 @@ export function ProductForm({
 
         <div className="add__actions">
           <button type="submit" className="btn btn--accent" disabled={isSubmitting}>
-            {isSubmitting ? 'Adding' : 'Add product'}
+            {isSubmitting ? 'Añadiendo' : 'Añadir producto'}
           </button>
         </div>
 
         <div className="add__status" role="status">
           {isSubmitting && slow && (
-            <p className="form-note">Saving. The server is waking up, so this can take up to a minute.</p>
+            <p className="form-note">Guardando. El servidor está despertando, así que puede tardar hasta un minuto.</p>
           )}
           {successMessage && <p className="form-note">{successMessage}</p>}
         </div>

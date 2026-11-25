@@ -1,6 +1,6 @@
 import type { Product } from '../api/catalog'
 import type { ProductsStatus } from '../hooks/useProducts'
-import { formatPrice } from '../lib/format'
+import { formatCount, formatPrice } from '../lib/format'
 
 /** Long lists would otherwise leave late rows (or a newly added one) invisible for seconds. */
 const MAX_STAGGER = 8
@@ -19,13 +19,13 @@ export function CatalogList({ status, products, slow, error, onRetry }: CatalogL
 
   return (
     <section id="catalog" className="catalog" aria-labelledby="catalog-title" aria-busy={status === 'loading'}>
-      <h2 id="catalog-title" className="section-title">The catalog</h2>
+      <h2 id="catalog-title" className="section-title">El catálogo</h2>
 
       {status === 'loading' && (
         <p className="catalog__note" role="status">
           {slow
-            ? 'Waking up the server. The first visit after a quiet spell can take up to a minute.'
-            : 'Loading the catalog.'}
+            ? 'Despertando el servidor. La primera visita tras un rato de inactividad puede tardar hasta un minuto.'
+            : 'Cargando el catálogo.'}
         </p>
       )}
 
@@ -33,23 +33,23 @@ export function CatalogList({ status, products, slow, error, onRetry }: CatalogL
         <div className="catalog__note" role="alert">
           <p>{error}</p>
           <button type="button" className="btn btn--accent" onClick={onRetry}>
-            Try again
+            Intentar de nuevo
           </button>
         </div>
       )}
 
       {status === 'loaded' && products.length === 0 && (
-        <p className="catalog__note">The catalog is empty for now. New products will show up here.</p>
+        <p className="catalog__note">El catálogo está vacío por ahora. Los productos nuevos aparecerán aquí.</p>
       )}
 
       {status === 'loaded' && products.length > 0 && (
         <>
           <p className="catalog__note">
-            {products.length} {products.length === 1 ? 'product' : 'products'}, {inStock.length} in
-            stock. Prices and stock come straight from the live catalog.
+            {products.length} {products.length === 1 ? 'producto' : 'productos'}, {inStock.length} en
+            stock. Precios y stock vienen directamente del catálogo en vivo.
           </p>
-          <ProductGroup label="In stock" products={inStock} offset={0} />
-          <ProductGroup label="Sold out" products={soldOut} offset={inStock.length} />
+          <ProductGroup label="En stock" products={inStock} offset={0} />
+          <ProductGroup label="Agotados" products={soldOut} offset={inStock.length} />
         </>
       )}
     </section>
@@ -69,7 +69,7 @@ function ProductGroup({ label, products, offset }: { label: string; products: Pr
               {product.name}
             </span>
             <span className="row__value">
-              <span className="row__stock">{product.stock > 0 ? `${product.stock} left` : 'None left'}</span>
+              <span className="row__stock">{product.stock > 0 ? `${formatCount(product.stock)} ${product.stock === 1 ? 'disponible' : 'disponibles'}` : 'Agotado'}</span>
               <span className="row__price">{formatPrice(product.price)}</span>
             </span>
           </li>

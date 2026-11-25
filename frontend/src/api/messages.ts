@@ -3,16 +3,16 @@ import { QUESTION_MAX_LENGTH } from './catalog'
 
 /** Turns any request failure into one calm, user-facing sentence. */
 export function describeError(error: unknown): string {
-  if (!(error instanceof ApiError)) return 'Something went wrong. Please try again.'
+  if (!(error instanceof ApiError)) return 'Algo salió mal. Inténtalo de nuevo.'
   switch (error.kind) {
     case 'network':
-      return 'The server could not be reached. Check your connection and try again.'
+      return 'No se pudo conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.'
     case 'timeout':
-      return 'The server took too long to answer. It may still be waking up, so try again.'
+      return 'El servidor tardó demasiado en responder. Puede que aún esté despertando, así que inténtalo de nuevo.'
     case 'validation':
-      return `Questions need between 1 and ${QUESTION_MAX_LENGTH} characters.`
+      return `Las preguntas deben tener entre 1 y ${QUESTION_MAX_LENGTH} caracteres.`
     case 'aborted':
-      return 'The request was cancelled.'
+      return 'La solicitud fue cancelada.'
     case 'http':
       return describeStatus(error.status)
   }
@@ -25,13 +25,13 @@ export function describeCreateError(error: unknown): string {
     case 'network':
     case 'timeout':
       // The request may have reached the server before the connection dropped.
-      return 'The server did not answer, perhaps because it is waking up. Try again in a moment. If the product already shows in the list, it was saved.'
+      return 'El servidor no respondió, quizá porque está despertando. Inténtalo de nuevo en un momento. Si el producto ya aparece en la lista, se guardó.'
     case 'validation':
       return error.detail
-        ? `The server did not accept the product (${error.detail}). Check the fields and try again.`
-        : 'The server did not accept the product. Check the fields and try again.'
+        ? `El servidor no aceptó el producto (${error.detail}). Revisa los campos e inténtalo de nuevo.`
+        : 'El servidor no aceptó el producto. Revisa los campos e inténtalo de nuevo.'
     case 'http':
-      return `The product could not be saved${error.status ? ` (error ${error.status})` : ''}. Please try again in a moment.`
+      return `No se pudo guardar el producto${error.status ? ` (error ${error.status})` : ''}. Inténtalo de nuevo en un momento.`
     case 'aborted':
       return describeError(error)
   }
@@ -40,12 +40,12 @@ export function describeCreateError(error: unknown): string {
 function describeStatus(status: number | undefined): string {
   switch (status) {
     case 429:
-      return 'The assistant is busy right now. Please try again in a minute.'
+      return 'El asistente está ocupado en este momento. Inténtalo de nuevo en un minuto.'
     case 502:
-      return 'The assistant could not answer right now. Please try again in a minute.'
+      return 'El asistente no pudo responder en este momento. Inténtalo de nuevo en un minuto.'
     case 503:
-      return 'The assistant is not set up yet. Please try again later.'
+      return 'El asistente aún no está configurado. Inténtalo más tarde.'
     default:
-      return `The server answered with an error${status ? ` (${status})` : ''}. Please try again.`
+      return `El servidor respondió con un error${status ? ` (${status})` : ''}. Inténtalo de nuevo.`
   }
 }

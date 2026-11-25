@@ -37,16 +37,16 @@ export function App() {
         </article>
       </main>
 
-      <aside className="page__chat" data-tab-active={tab === 'ask'} aria-label="Catalog assistant">
+      <aside className="page__chat" data-tab-active={tab === 'ask'} aria-label="Asistente del catálogo">
         <ChatContainer products={catalog.products} inputRef={inputRef} />
       </aside>
 
-      <nav className="tabs" aria-label="Sections">
+      <nav className="tabs" aria-label="Secciones">
         <button type="button" className="tabs__tab" aria-pressed={tab === 'catalog'} onClick={() => setTab('catalog')}>
-          Catalog
+          Catálogo
         </button>
         <button type="button" className="tabs__tab" aria-pressed={tab === 'ask'} onClick={() => setTab('ask')}>
-          Ask
+          Preguntar
         </button>
       </nav>
     </div>
