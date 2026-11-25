@@ -43,6 +43,18 @@ describe('parseProductForm', () => {
     expect(parseProductForm({ ...valid, price: '0' })).toMatchObject({ ok: true, input: { price: 0 } })
   })
 
+  it('rejects hex, binary, octal and exponent prices that Number() would silently coerce', () => {
+    for (const price of ['0x1A', '0b11', '0o7', '1e3', '2E2', '1_000', '25,50', '+5', 'Infinity']) {
+      expect(errorsFor({ price }).price, price).toBe('Enter a number, for example 25.50.')
+    }
+  })
+
+  it('accepts plain decimal prices, with or without a leading or trailing dot', () => {
+    for (const [price, value] of [['25', 25], ['25.50', 25.5], ['.5', 0.5], ['25.', 25]] as const) {
+      expect(parseProductForm({ ...valid, price }), price).toMatchObject({ ok: true, input: { price: value } })
+    }
+  })
+
   it('rejects a stock that is not a whole number of 0 or more', () => {
     const message = 'Use a whole number, 0 or more.'
     expect(errorsFor({ stock: '1.5' }).stock).toBe(message)

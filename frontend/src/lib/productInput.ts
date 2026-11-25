@@ -62,6 +62,9 @@ function parseName(raw: string): Parsed<string> {
 function parsePrice(raw: string): Parsed<number> {
   const text = raw.trim()
   if (!text) return { error: 'Enter a price.' }
+  // Number() alone also accepts hex, binary, octal and exponent forms ("0x1A", "1e3"),
+  // which would store a different value than the one typed.
+  if (!/^-?(\d+\.?\d*|\.\d+)$/.test(text)) return { error: 'Enter a number, for example 25.50.' }
   const price = Number(text)
   if (!Number.isFinite(price)) return { error: 'Enter a number, for example 25.50.' }
   if (price < 0) return { error: 'The price cannot be negative.' }
