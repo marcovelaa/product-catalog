@@ -63,8 +63,8 @@ describe('useCreateProduct', () => {
     expect(create).not.toHaveBeenCalled()
     expect(result.current.status).toBe('idle')
     expect(result.current.fieldErrors).toEqual({
-      name: 'Enter a name.',
-      price: 'Enter a number, for example 25.50.',
+      name: 'Escribe un nombre.',
+      price: 'Escribe un número, por ejemplo 25,50.',
     })
   })
 
@@ -76,7 +76,7 @@ describe('useCreateProduct', () => {
 
     act(() => result.current.clearFieldError('name'))
 
-    expect(result.current.fieldErrors).toEqual({ price: 'Enter a price.' })
+    expect(result.current.fieldErrors).toEqual({ price: 'Escribe un precio.' })
   })
 
   it('shows a 422 from the server as a form-level error that cannot simply be retried', async () => {
@@ -106,7 +106,7 @@ describe('useCreateProduct', () => {
     })
 
     expect(result.current.status).toBe('error')
-    expect(result.current.error).toMatch(/waking up/i)
+    expect(result.current.error).toMatch(/despertando/i)
     expect(result.current.retryable).toBe(true)
     expect(create).toHaveBeenCalledTimes(1)
 

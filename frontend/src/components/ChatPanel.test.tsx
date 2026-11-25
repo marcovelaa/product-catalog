@@ -5,7 +5,7 @@ import { ChatPanel } from './ChatPanel'
 
 const props = {
   messages: [] as ChatMessage[],
-  starters: ['Which products are in stock right now?'],
+  starters: ['¿Qué productos hay en stock ahora mismo?'],
   draft: '',
   maxLength: 500,
   isSending: false,
@@ -29,7 +29,7 @@ describe('ChatPanel', () => {
   it('sends on Enter but not on Shift+Enter', () => {
     const onSubmit = vi.fn()
     render(<ChatPanel {...props} draft="Hi?" onSubmit={onSubmit} />)
-    const input = screen.getByLabelText('Your question')
+    const input = screen.getByLabelText('Tu pregunta')
 
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
     expect(onSubmit).not.toHaveBeenCalled()
@@ -39,14 +39,14 @@ describe('ChatPanel', () => {
 
   it('caps the input at the backend limit and disables it while sending', () => {
     render(<ChatPanel {...props} isSending />)
-    const input = screen.getByLabelText('Your question')
+    const input = screen.getByLabelText('Tu pregunta')
 
     expect(input).toHaveAttribute('maxlength', '500')
     expect(input).toBeDisabled()
   })
 
   it('announces new answers politely', () => {
-    render(<ChatPanel {...props} latestAnswer="Three products are in stock." />)
-    expect(screen.getByText('Three products are in stock.')).toHaveAttribute('aria-live', 'polite')
+    render(<ChatPanel {...props} latestAnswer="Hay tres productos en stock." />)
+    expect(screen.getByText('Hay tres productos en stock.')).toHaveAttribute('aria-live', 'polite')
   })
 })

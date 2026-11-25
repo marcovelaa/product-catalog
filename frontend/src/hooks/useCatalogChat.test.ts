@@ -84,7 +84,7 @@ describe('useCatalogChat', () => {
 
     const reply = result.current.messages[1]
     expect(reply.status).toBe('error')
-    expect(reply.error).toMatch(/busy/i)
+    expect(reply.error).toMatch(/ocupado/i)
     expect(result.current.isSending).toBe(false)
 
     await act(async () => {

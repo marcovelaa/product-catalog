@@ -46,7 +46,7 @@ export function ProductFormContainer({ onCreated }: ProductFormContainerProps) {
       slow={create.slow}
       error={create.error}
       retryable={create.retryable}
-      successMessage={create.status === 'success' && create.created ? `Added ${create.created.name}.` : ''}
+      successMessage={create.status === 'success' && create.created ? `Se añadió ${create.created.name}.` : ''}
       onChange={handleChange}
       onSubmit={submit}
       onRetry={submit}

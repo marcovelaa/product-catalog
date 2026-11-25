@@ -17,21 +17,21 @@ const base = { products: [], slow: false, error: '', onRetry: () => {} }
 describe('CatalogList', () => {
   it('shows a calm wake-up note when loading is slow', () => {
     render(<CatalogList {...base} status="loading" slow />)
-    expect(screen.getByRole('status')).toHaveTextContent(/waking up the server/i)
+    expect(screen.getByRole('status')).toHaveTextContent(/despertando el servidor/i)
   })
 
   it('shows the error with a retry button', () => {
     const onRetry = vi.fn()
-    render(<CatalogList {...base} status="error" error="The server could not be reached." onRetry={onRetry} />)
+    render(<CatalogList {...base} status="error" error="No se pudo conectar con el servidor." onRetry={onRetry} />)
 
-    expect(screen.getByRole('alert')).toHaveTextContent('The server could not be reached.')
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('No se pudo conectar con el servidor.')
+    fireEvent.click(screen.getByRole('button', { name: 'Intentar de nuevo' }))
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
   it('says so when the catalog is empty', () => {
     render(<CatalogList {...base} status="loaded" />)
-    expect(screen.getByText(/catalog is empty/i)).toBeInTheDocument()
+    expect(screen.getByText(/catálogo está vacío/i)).toBeInTheDocument()
   })
 
   it('groups products by stock and formats prices', () => {
@@ -43,12 +43,12 @@ describe('CatalogList', () => {
       />,
     )
 
-    expect(screen.getByText('2 products, 1 in stock.', { exact: false })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'In stock' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Sold out' })).toBeInTheDocument()
-    expect(screen.getByText('$25.50')).toBeInTheDocument()
-    expect(screen.getByText('12 left')).toBeInTheDocument()
-    expect(screen.getByText('$89.99')).toBeInTheDocument()
+    expect(screen.getByText('2 productos, 1 en stock.', { exact: false })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'En stock' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Agotados' })).toBeInTheDocument()
+    expect(screen.getByText('25,50')).toBeInTheDocument()
+    expect(screen.getByText('12 disponibles')).toBeInTheDocument()
+    expect(screen.getByText('89,99')).toBeInTheDocument()
   })
 
   it('treats a negative stock as sold out so no row goes missing', () => {
@@ -56,13 +56,14 @@ describe('CatalogList', () => {
       <CatalogList
         {...base}
         status="loaded"
-        products={[product(1, 'Wireless Mouse', 25.5, 3), product(2, 'Broken Import', 10, -2)]}
+        products={[product(1, 'Wireless Mouse', 25.5, 3), product(2, 'Broken Import', 10, -2), product(3, 'Single Cable', 5, 1)]}
       />,
     )
 
-    expect(screen.getByText('2 products, 1 in stock.', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText('3 productos, 2 en stock.', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText('1 disponible')).toBeInTheDocument()
     expect(screen.getByText('Broken Import')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Sold out' })).toBeInTheDocument()
-    expect(screen.getByText('None left')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Agotados' })).toBeInTheDocument()
+    expect(screen.getByText('Agotado')).toBeInTheDocument()
   })
 })

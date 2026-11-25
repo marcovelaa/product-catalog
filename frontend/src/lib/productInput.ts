@@ -54,20 +54,27 @@ export function parseProductForm(values: ProductFormValues): ParsedProduct {
 
 function parseName(raw: string): Parsed<string> {
   const name = raw.trim()
-  if (!name) return { error: 'Enter a name.' }
-  if (name.length > PRODUCT_NAME_MAX_LENGTH) return { error: `Use ${PRODUCT_NAME_MAX_LENGTH} characters or fewer.` }
+  if (!name) return { error: 'Escribe un nombre.' }
+  if (name.length > PRODUCT_NAME_MAX_LENGTH) return { error: `Usa ${PRODUCT_NAME_MAX_LENGTH} caracteres o menos.` }
   return { value: name }
 }
 
 function parsePrice(raw: string): Parsed<number> {
   const text = raw.trim()
-  if (!text) return { error: 'Enter a price.' }
+  if (!text) return { error: 'Escribe un precio.' }
   // Number() alone also accepts hex, binary, octal and exponent forms ("0x1A", "1e3"),
   // which would store a different value than the one typed.
-  if (!/^-?(\d+\.?\d*|\.\d+)$/.test(text)) return { error: 'Enter a number, for example 25.50.' }
-  const price = Number(text)
-  if (!Number.isFinite(price)) return { error: 'Enter a number, for example 25.50.' }
-  if (price < 0) return { error: 'The price cannot be negative.' }
+  // The UI shows prices with a decimal comma, so a single "," or "." is accepted as the
+  // decimal separator. Two separators ("1.000,50") are ambiguous and rejected.
+  if (!/^-?(\d+[.,]?\d*|[.,]\d+)$/.test(text)) return { error: 'Escribe un número, por ejemplo 25,50.' }
+  // "1.000" or "1,000" is how many Spanish speakers write one thousand, but would be read
+  // as 1. Prices take at most 2 decimals, so that form is rejected instead of misread.
+  if (/[.,]\d{3,}$/.test(text)) {
+    return { error: 'Usa como máximo 2 decimales y sin separador de miles. Por ejemplo 1000 o 25,50.' }
+  }
+  const price = Number(text.replace(',', '.'))
+  if (!Number.isFinite(price)) return { error: 'Escribe un número, por ejemplo 25,50.' }
+  if (price < 0) return { error: 'El precio no puede ser negativo.' }
   return { value: price }
 }
 
@@ -75,9 +82,9 @@ function parsePrice(raw: string): Parsed<number> {
 function parseStock(raw: string): Parsed<number> {
   const text = raw.trim()
   if (!text) return { value: 0 }
-  if (!/^\d+$/.test(text)) return { error: 'Use a whole number, 0 or more.' }
+  if (!/^\d+$/.test(text)) return { error: 'Usa un número entero, 0 o más.' }
   const stock = Number(text)
-  if (stock > STOCK_MAX) return { error: `Use a number up to ${STOCK_MAX.toLocaleString('en-US')}.` }
+  if (stock > STOCK_MAX) return { error: `Usa un número de hasta ${STOCK_MAX.toLocaleString('es')}.` }
   return { value: stock }
 }
 
@@ -85,12 +92,12 @@ function parseStock(raw: string): Parsed<number> {
 function parseImageUrl(raw: string): Parsed<string | null> {
   const text = raw.trim()
   if (!text) return { value: null }
-  if (text.length > IMAGE_URL_MAX_LENGTH) return { error: `Use ${IMAGE_URL_MAX_LENGTH} characters or fewer.` }
+  if (text.length > IMAGE_URL_MAX_LENGTH) return { error: `Usa ${IMAGE_URL_MAX_LENGTH} caracteres o menos.` }
   try {
     const { protocol } = new URL(text)
     if (protocol === 'http:' || protocol === 'https:') return { value: text }
   } catch {
     // Falls through to the shared message below.
   }
-  return { error: 'Use a link that starts with http:// or https://.' }
+  return { error: 'Usa un enlace que empiece con http:// o https://.' }
 }
