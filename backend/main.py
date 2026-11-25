@@ -1,15 +1,18 @@
+import logging
 import os
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import models
 import schemas
+import telegram_bot
 from catalog_assistant import (
     MAX_CATALOG_ITEMS,
     AssistantError,
@@ -22,6 +25,8 @@ from catalog_assistant import (
 from database import get_db
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_ALLOWED_ORIGIN = "http://localhost:5173"
 
@@ -48,6 +53,15 @@ app.add_middleware(
 
 DbSession = Annotated[Session, Depends(get_db)]
 Assistant = Annotated[CatalogAssistant, Depends(get_catalog_assistant)]
+TelegramUpdate = Annotated[
+    telegram_bot.TelegramUpdate | None, Depends(telegram_bot.verified_update)
+]
+TelegramSender = Annotated[
+    telegram_bot.TelegramSender, Depends(telegram_bot.get_telegram_sender)
+]
+TelegramAssistant = Annotated[
+    CatalogAssistant, Depends(telegram_bot.get_telegram_assistant)
+]
 
 ASSISTANT_UNAVAILABLE = (
     status.HTTP_502_BAD_GATEWAY,
@@ -109,6 +123,54 @@ def ask_catalog(payload: schemas.CatalogQuestion, db: DbSession, assistant: Assi
     # exhaust the pool and stall the product endpoints.
     db.rollback()
     return schemas.CatalogAnswer(answer=assistant.answer(payload.question, products))
+
+
+TELEGRAM_ACK = {"ok": True}
+
+
+@app.post("/telegram/webhook", tags=["Telegram bot"])
+def telegram_webhook(
+    update: TelegramUpdate,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    sender: TelegramSender,
+    assistant: TelegramAssistant,
+) -> dict[str, bool]:
+    """Receive a Telegram update and acknowledge it at once.
+
+    Replies are sent from background tasks after the response, because Telegram
+    redelivers updates that are not acknowledged quickly and the LLM is slow.
+    """
+    message = update.message if update else None
+    if message is None or message.text is None:
+        return TELEGRAM_ACK  # Edited messages, stickers, joins, other update types.
+    chat_id = message.chat.id
+
+    interpreted = telegram_bot.interpret_text(message.text)
+    if isinstance(interpreted, telegram_bot.Reply):
+        background_tasks.add_task(telegram_bot.send_safely, sender, chat_id, interpreted.text)
+        return TELEGRAM_ACK
+
+    try:
+        products = load_catalog_snapshot(db)
+    except SQLAlchemyError as error:
+        logger.warning(
+            "Catalog query failed for Telegram (chat_id=%s, error=%s)",
+            chat_id, type(error).__name__,
+        )
+        background_tasks.add_task(
+            telegram_bot.send_safely, sender, chat_id, telegram_bot.UNAVAILABLE_TEXT
+        )
+        return TELEGRAM_ACK
+    finally:
+        # Release the pooled connection before the background LLM call.
+        db.rollback()
+
+    background_tasks.add_task(
+        telegram_bot.answer_question,
+        sender, assistant, chat_id, interpreted.question, products,
+    )
+    return TELEGRAM_ACK
 
 
 def load_catalog_snapshot(db: Session) -> list[CatalogProduct]:

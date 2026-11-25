@@ -7,6 +7,8 @@ import os
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["ALLOWED_ORIGINS"] = "http://localhost:5173"
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["TELEGRAM_BOT_TOKEN"] = ""
+os.environ["TELEGRAM_WEBHOOK_SECRET"] = ""
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
