@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels its older run. Runs on main are never
+# cancelled, so every main commit ends with a CI result.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
