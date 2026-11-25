@@ -12,10 +12,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to a pull request cancels its older run. Runs on main are never
-# cancelled, so every main commit ends with a CI result.
+# Pull request runs share one group per PR, so a newer push cancels the older run.
+# Every other event (pushes to main) gets its own group per commit, so a burst of
+# pushes never cancels or replaces a pending run and each commit ends with a result.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
