@@ -27,3 +27,6 @@ Thumbs.db
 
 # Local agent skill registry (machine-specific paths)
 .atl/
+
+# Local design-tool working files
+.taste-skill/
