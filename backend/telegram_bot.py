@@ -12,6 +12,8 @@ a background task after the HTTP response.
 import hmac
 import logging
 import os
+import threading
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Protocol
@@ -40,20 +42,27 @@ SEND_TIMEOUT_SECONDS = 10.0
 MAX_MESSAGE_LENGTH = 4096  # Bot API limit for sendMessage text.
 KNOWN_COMMANDS = frozenset({"start", "help"})
 
+MAX_RECENT_UPDATES = 1000
+
+# Fixed replies are in Spanish, like the web UI. The assistant's own answers are
+# written by the model in the language of the question.
 WELCOME_TEXT = (
-    "Hi! I am the product catalog assistant.\n\n"
-    "Ask me anything about our products, for example:\n"
-    "- Do you have keyboards under 100?\n"
-    "- Which products are out of stock?\n\n"
-    "I answer only from the current catalog. After a while without use the "
-    "server sleeps, so the first answer can take about a minute."
+    "¡Hola! Soy el asistente del catálogo de productos.\n\n"
+    "Pregúntame lo que quieras sobre precios y existencias, por ejemplo:\n"
+    "- ¿Tienen teclados por menos de 100?\n"
+    "- ¿Qué productos están agotados?\n\n"
+    "Envía preguntas de 1 a 500 caracteres. Respondo solo con la información "
+    "actual del catálogo. Si el servidor lleva un rato sin uso se suspende, así "
+    "que la primera respuesta puede tardar cerca de un minuto."
 )
-INVALID_QUESTION_TEXT = "Please send a question between 1 and 500 characters."
-BUSY_TEXT = "The assistant is busy right now. Please try again in a minute."
+INVALID_QUESTION_TEXT = "Por favor, envía una pregunta de entre 1 y 500 caracteres."
+BUSY_TEXT = "El asistente está ocupado en este momento. Inténtalo de nuevo en un minuto."
 UNAVAILABLE_TEXT = (
-    "Sorry, I could not answer right now. Please try again in a minute."
+    "Lo siento, no he podido responder ahora mismo. Inténtalo de nuevo en un minuto."
 )
-NOT_CONFIGURED_TEXT = "The catalog assistant is not set up yet. Please try again later."
+NOT_CONFIGURED_TEXT = (
+    "El asistente del catálogo aún no está configurado. Inténtalo de nuevo más tarde."
+)
 ASSISTANT_ERROR_TEXTS: dict[type[AssistantError], str] = {
     AssistantNotConfigured: NOT_CONFIGURED_TEXT,
     AssistantQuotaExceeded: BUSY_TEXT,
@@ -73,7 +82,51 @@ class TelegramMessage(BaseModel):
 
 
 class TelegramUpdate(BaseModel):
+    update_id: int | None = None
     message: TelegramMessage | None = None
+
+
+# --- Duplicate deliveries --------------------------------------------------------
+
+
+class RecentUpdates:
+    """Bounded, thread-safe record of recently seen update ids.
+
+    Telegram redelivers an update when the webhook is slow to answer (for
+    example during a Render cold start), which would otherwise send the user a
+    second reply. Limitation: the record lives in process memory, so it is
+    cleared when the service restarts or sleeps (Render free tier). It covers
+    the common case, a redelivery within the same process lifetime, not every
+    case.
+    """
+
+    def __init__(self, max_entries: int = MAX_RECENT_UPDATES):
+        if max_entries < 1:
+            raise ValueError("max_entries must be at least 1")
+        self._max_entries = max_entries
+        self._seen: OrderedDict[int, None] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._seen)
+
+    def first_time(self, update_id: int) -> bool:
+        """Record `update_id`; True if it was not already in the record."""
+        with self._lock:
+            if update_id in self._seen:
+                return False
+            self._seen[update_id] = None
+            if len(self._seen) > self._max_entries:
+                self._seen.popitem(last=False)  # evict the oldest id
+            return True
+
+
+_recent_updates = RecentUpdates()
+
+
+def get_recent_updates() -> RecentUpdates:
+    return _recent_updates
 
 
 # --- Configuration -------------------------------------------------------------

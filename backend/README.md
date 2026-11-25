@@ -119,13 +119,15 @@ The bot answers catalog questions in Telegram with the same assistant as `POST /
    curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
    ```
 
-6. Open your bot in Telegram and send `/start`, then a question such as `Do you have keyboards under 100?`.
+6. Open your bot in Telegram and send `/start`, then a question such as `¿Tienen teclados por menos de 100?`.
 
 Behavior:
 
 - `/start` and `/help` (and any other command) reply with usage instructions.
 - Any other text is a catalog question, with the same limits as the API (1-500 characters). Answers are plain text.
 - The webhook acknowledges at once and sends the answer from a background task, so Telegram does not redeliver the update while Gemini is thinking.
+- Duplicate deliveries are ignored: the API remembers the last 1000 `update_id` values and acknowledges a repeated one without replying again. Limitation: this record lives in memory, so it is cleared when the service restarts or sleeps (Render free tier). It covers the common case, a redelivery within the same process lifetime, not every case.
+- The bot's fixed messages (welcome, errors) are in Spanish. Gemini answers in the language of the question.
 - Edited messages, stickers, photos and other updates are ignored.
 - If Gemini is rate-limited or failing, the bot replies with a short "try again" message.
 - If `TELEGRAM_BOT_TOKEN` or `TELEGRAM_WEBHOOK_SECRET` is missing, the webhook returns `503` and the rest of the API keeps working.

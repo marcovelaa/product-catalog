@@ -63,6 +63,9 @@ TelegramSender = Annotated[
 TelegramAssistant = Annotated[
     CatalogAssistant, Depends(telegram_bot.get_telegram_assistant)
 ]
+TelegramRecentUpdates = Annotated[
+    telegram_bot.RecentUpdates, Depends(telegram_bot.get_recent_updates)
+]
 
 SlackNotifier = Annotated[
     slack_alerts.SlackNotifier | None, Depends(slack_alerts.get_slack_notifier)
@@ -158,12 +161,21 @@ def telegram_webhook(
     db: DbSession,
     sender: TelegramSender,
     assistant: TelegramAssistant,
+    recent_updates: TelegramRecentUpdates,
 ) -> dict[str, bool]:
     """Receive a Telegram update and acknowledge it at once.
 
     Replies are sent from background tasks after the response, because Telegram
     redelivers updates that are not acknowledged quickly and the LLM is slow.
+    A redelivered update_id is acknowledged without a reply; the record is in
+    memory, so it is lost on restart (see telegram_bot.RecentUpdates).
     """
+    if (
+        update is not None
+        and update.update_id is not None
+        and not recent_updates.first_time(update.update_id)
+    ):
+        return TELEGRAM_ACK  # Duplicate delivery: already handled or in progress.
     message = update.message if update else None
     if message is None or message.text is None:
         return TELEGRAM_ACK  # Edited messages, stickers, joins, other update types.

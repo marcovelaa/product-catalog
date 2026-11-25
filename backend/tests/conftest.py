@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 import catalog_assistant  # noqa: E402
+import telegram_bot  # noqa: E402
 import models  # noqa: E402,F401  (registers the Product table on Base.metadata)
 from database import Base, get_db  # noqa: E402
 from main import app  # noqa: E402
@@ -57,6 +58,15 @@ def isolated_assistant():
     yield
     catalog_assistant.gemini_assistant_for.cache_clear()
     app.dependency_overrides.pop(catalog_assistant.get_catalog_assistant, None)
+
+
+@pytest.fixture(autouse=True)
+def recent_updates():
+    """Give every test a fresh update_id record so no state leaks between tests."""
+    recent = telegram_bot.RecentUpdates()
+    app.dependency_overrides[telegram_bot.get_recent_updates] = lambda: recent
+    yield recent
+    app.dependency_overrides.pop(telegram_bot.get_recent_updates, None)
 
 
 @pytest.fixture
