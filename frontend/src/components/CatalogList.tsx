@@ -2,6 +2,9 @@ import type { Product } from '../api/catalog'
 import type { ProductsStatus } from '../hooks/useProducts'
 import { formatPrice } from '../lib/format'
 
+/** Long lists would otherwise leave late rows (or a newly added one) invisible for seconds. */
+const MAX_STAGGER = 8
+
 interface CatalogListProps {
   status: ProductsStatus
   products: Product[]
@@ -12,7 +15,7 @@ interface CatalogListProps {
 
 export function CatalogList({ status, products, slow, error, onRetry }: CatalogListProps) {
   const inStock = products.filter((product) => product.stock > 0)
-  const soldOut = products.filter((product) => product.stock === 0)
+  const soldOut = products.filter((product) => product.stock <= 0)
 
   return (
     <section id="catalog" className="catalog" aria-labelledby="catalog-title" aria-busy={status === 'loading'}>
@@ -60,7 +63,7 @@ function ProductGroup({ label, products, offset }: { label: string; products: Pr
       <h3 className="catalog__group-label">{label}</h3>
       <ul className="catalog__rows">
         {products.map((product, index) => (
-          <li key={product.id} className="row" style={{ '--i': offset + index } as React.CSSProperties}>
+          <li key={product.id} className="row" style={{ '--i': Math.min(offset + index, MAX_STAGGER) } as React.CSSProperties}>
             <span className="row__name">
               <span className={`row__dot ${product.stock > 0 ? 'row__dot--in' : ''}`} aria-hidden="true" />
               {product.name}

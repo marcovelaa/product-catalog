@@ -4,6 +4,7 @@ import { CatalogList } from './components/CatalogList'
 import { Hero } from './components/Hero'
 import { SiteFooter } from './components/SiteFooter'
 import { ChatContainer } from './containers/ChatContainer'
+import { ProductFormContainer } from './containers/ProductFormContainer'
 import { useProducts } from './hooks/useProducts'
 
 type Tab = 'catalog' | 'ask'
@@ -31,6 +32,7 @@ export function App() {
             error={catalog.error}
             onRetry={catalog.reload}
           />
+          <ProductFormContainer onCreated={catalog.addProduct} />
           <SiteFooter />
         </article>
       </main>
