@@ -50,4 +50,4 @@ The bot is read-only and public (it only answers catalog questions). The owner w
 - Open requests (user, 2026-11-25): (1) currency in bolivianos (Bs) across web, bot and assistant; waiting for the user to say whether to only relabel or also convert values and with which rate; (2) the video must be about how to integrate an agent bot into a system; (3) NotebookLM source document + diagram + fresh screenshots after this merges.
 
 ## Next step
-Push both branches as stacked PRs (needs user OK), merge, then T3 user steps: `/id`, set `TELEGRAM_ADMIN_IDS` in Render, live check.
+User approves the SQL, Claude applies it, push and merge `feat/telegram-memory`, live check of memory and `/olvidar`, then the currency change (Bs).
