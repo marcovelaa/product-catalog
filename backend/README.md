@@ -8,7 +8,7 @@ FastAPI backend for a single `products` table on Supabase Postgres.
 | ------ | ------------------ | -------------------------------------------- |
 | GET    | `/health`          | Health check, no database access             |
 | GET    | `/api/v1/products` | List products, ordered by id                 |
-| POST   | `/api/v1/products` | Create a product (`201`), invalid data `422` |
+| POST   | `/api/v1/products` | Create a product (`201`, optional [Slack alert](#slack-alerts)), invalid data `422` |
 | POST   | `/api/v1/catalog/ask` | Ask the catalog assistant (Gemini) a question |
 | POST   | `/telegram/webhook` | Telegram bot webhook (see [Telegram bot](#telegram-bot)) |
 
@@ -33,6 +33,7 @@ Copy `.env.example` to `.env` (if it does not exist yet) and fill in the real va
 - `GEMINI_API_KEY`: Google Gemini API key for the catalog assistant. Leave it empty to disable the assistant; the product endpoints keep working.
 - `GEMINI_MODEL` (optional): Gemini model for the catalog assistant. Defaults to `gemini-3.5-flash-lite`.
 - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET` (optional): enable the Telegram bot. Leave them empty to disable it; the rest of the API keeps working.
+- `SLACK_WEBHOOK_URL` (optional): Slack Incoming Webhook URL that receives an alert for every new product. Leave it empty to disable the alerts; the API behaves exactly as before.
 
 > **Never commit `.env`.** It holds your database password and is already listed in `.gitignore`.
 
@@ -131,6 +132,20 @@ Behavior:
 - Render's free tier sleeps after 15 minutes without traffic. The first message after that wakes the server, so its reply can take about a minute.
 - If you rotate the token or the secret, update Render and run `setWebhook` again.
 
+## Slack alerts
+
+Every successful `POST /api/v1/products` (`201`) can post a message to a Slack channel, for example `New product: Mechanical Keyboard (id 7) - price 49.50, stock 12`.
+
+1. In Slack, create an app at <https://api.slack.com/apps> -> **Incoming Webhooks** -> activate it -> **Add New Webhook to Workspace**, and pick the channel.
+2. Copy the webhook URL (`https://hooks.slack.com/services/...`) into Render -> Environment (and into `.env` for local runs) as `SLACK_WEBHOOK_URL`, then redeploy.
+
+Behavior:
+
+- Optional: with `SLACK_WEBHOOK_URL` empty or missing, nothing is sent and the API is unchanged.
+- Failure-safe: the message is sent from a background task after the response, with a 3 second timeout and no retries. A Slack error, timeout or non-2xx answer is logged as a warning and never changes the `201` response. Invalid requests (`422`) send nothing.
+- The product name is user-submitted, so `&`, `<` and `>` are escaped (no `@channel` mentions or links can be injected), newlines are collapsed and names over 100 characters are cut.
+- The webhook URL is a secret: anyone who has it can post to your channel. Never commit it or paste it in issues or logs; the API never logs it. If it leaks, revoke it in the Slack app settings and create a new one.
+
 ## Deploy to Render
 
 Create a **Web Service** from the GitHub repository that contains this folder:
@@ -141,6 +156,6 @@ Create a **Web Service** from the GitHub repository that contains this folder:
 | Build Command     | `pip install -r requirements.txt`                  |
 | Start Command     | `uvicorn main:app --host 0.0.0.0 --port $PORT`     |
 | Health Check Path | `/health`                                          |
-| Environment vars  | `DATABASE_URL`, `ALLOWED_ORIGINS`, `GEMINI_API_KEY`, optional `GEMINI_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (same as `.env`) |
+| Environment vars  | `DATABASE_URL`, `ALLOWED_ORIGINS`, `GEMINI_API_KEY`, optional `GEMINI_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, optional `SLACK_WEBHOOK_URL` (same as `.env`) |
 
 Render reads `.python-version` to use Python 3.13.
