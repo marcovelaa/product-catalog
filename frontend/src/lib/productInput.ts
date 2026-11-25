@@ -67,6 +67,11 @@ function parsePrice(raw: string): Parsed<number> {
   // The UI shows prices with a decimal comma, so a single "," or "." is accepted as the
   // decimal separator. Two separators ("1.000,50") are ambiguous and rejected.
   if (!/^-?(\d+[.,]?\d*|[.,]\d+)$/.test(text)) return { error: 'Escribe un número, por ejemplo 25,50.' }
+  // "1.000" or "1,000" is how many Spanish speakers write one thousand, but would be read
+  // as 1. Prices take at most 2 decimals, so that form is rejected instead of misread.
+  if (/[.,]\d{3,}$/.test(text)) {
+    return { error: 'Usa como máximo 2 decimales y sin separador de miles. Por ejemplo 1000 o 25,50.' }
+  }
   const price = Number(text.replace(',', '.'))
   if (!Number.isFinite(price)) return { error: 'Escribe un número, por ejemplo 25,50.' }
   if (price < 0) return { error: 'El precio no puede ser negativo.' }

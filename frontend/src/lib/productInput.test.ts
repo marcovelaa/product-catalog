@@ -49,6 +49,12 @@ describe('parseProductForm', () => {
     }
   })
 
+  it('rejects three or more decimals so a thousands-grouped "1.000" or "1,000" is never read as 1', () => {
+    for (const price of ['1.000', '1,000', '12,500', '0.125', '25.505']) {
+      expect(errorsFor({ price }).price, price).toBe('Usa como máximo 2 decimales y sin separador de miles. Por ejemplo 1000 o 25,50.')
+    }
+  })
+
   it('accepts plain decimal prices, with or without a leading or trailing dot', () => {
     for (const [price, value] of [['25', 25], ['25.50', 25.5], ['.5', 0.5], ['25.', 25], ['25,50', 25.5], [',5', 0.5], ['0,99', 0.99]] as const) {
       expect(parseProductForm({ ...valid, price }), price).toMatchObject({ ok: true, input: { price: value } })
