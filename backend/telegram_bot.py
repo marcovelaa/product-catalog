@@ -16,7 +16,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Protocol
 from urllib.parse import urlsplit
@@ -33,6 +33,7 @@ from catalog_assistant import (
     CatalogAssistant,
     CatalogItem,
     CatalogProduct,
+    ConversationTurn,
     get_catalog_assistant,
 )
 from product_service import ProductChanges
@@ -49,8 +50,8 @@ HELP_COMMANDS = frozenset({"start", "help", "ayuda"})
 
 MAX_RECENT_UPDATES = 1000
 
-# Fixed replies are in Spanish, like the web UI. The assistant's own answers are
-# written by the model in the language of the question.
+# Fixed replies are in Spanish, like the web UI, and so are the assistant's own
+# answers (its system instruction requires Spanish).
 WELCOME_TEXT = (
     "¡Hola! Soy el asistente del catálogo de productos.\n\n"
     "Pregúntame lo que quieras sobre precios y existencias, por ejemplo:\n"
@@ -58,11 +59,14 @@ WELCOME_TEXT = (
     "- ¿Qué productos están agotados?\n\n"
     "Comandos:\n"
     "/productos - lista los productos con su id, precio y existencias\n"
-    "/id - muestra tu ID de usuario de Telegram\n\n"
-    "Envía preguntas de 1 a 500 caracteres. Respondo solo con la información "
+    "/id - muestra tu ID de usuario de Telegram\n"
+    "/olvidar - borra lo que recuerdo de esta conversación\n\n"
+    "Envía preguntas de 1 a 500 caracteres. Recuerdo tus últimos mensajes para "
+    "entender las preguntas de seguimiento. Respondo solo con la información "
     "actual del catálogo. Si el servidor lleva un rato sin uso se suspende, así "
     "que la primera respuesta puede tardar cerca de un minuto."
 )
+NOTHING_TO_FORGET_TEXT = "No tenía nada guardado de esta conversación."
 ADD_SYNTAX = "/agregar Nombre; precio; stock; url opcional"
 ADD_EXAMPLE = "/agregar Mouse inalámbrico; 25,50; 12"
 EDIT_SYNTAX = "/editar <id> campo=valor; campo=valor"
@@ -280,6 +284,11 @@ class EditProduct:
     changes: ProductChanges
 
 
+@dataclass(frozen=True, slots=True)
+class Forget:
+    """The sender asked to clear this chat's conversation memory."""
+
+
 class InputError(ValueError):
     """Invalid admin command input; the message is the Spanish reply for the user."""
 
@@ -461,7 +470,7 @@ def interpret_text(
     text: str,
     sender_id: int | None = None,
     admin_ids: frozenset[int] = frozenset(),
-) -> Reply | ListProducts | AddProduct | EditProduct | schemas.CatalogQuestion:
+) -> Reply | ListProducts | AddProduct | EditProduct | Forget | schemas.CatalogQuestion:
     """Map a chat message to a canned reply, a command or a validated catalog question."""
     command = parse_command(text)
     if command is not None:
@@ -474,6 +483,8 @@ def interpret_text(
             return Reply(f"Tu ID de usuario de Telegram es {sender_id}.")
         if name == "productos":
             return ListProducts()
+        if name == "olvidar":
+            return Forget()
         if name in ADMIN_COMMANDS:
             # Checked before the payload is parsed, so a refused sender learns
             # nothing about the syntax and nothing reaches the database.
@@ -517,6 +528,14 @@ def product_added_text(product: CatalogProduct) -> str:
 
 def product_updated_text(product: CatalogProduct) -> str:
     return f"Producto actualizado: {format_product_line(product)}."
+
+
+def forgotten_text(count: int) -> str:
+    """Reply to /olvidar: how many stored messages were deleted."""
+    if count <= 0:
+        return NOTHING_TO_FORGET_TEXT
+    noun = "mensaje" if count == 1 else "mensajes"
+    return f"Listo, olvidé {count} {noun} de esta conversación."
 
 
 def product_missing_text(product_id: int) -> str:
@@ -584,7 +603,12 @@ class _UnconfiguredAssistant:
     def __init__(self, error: AssistantNotConfigured):
         self._error = error
 
-    def answer(self, question: str, products: Sequence[CatalogItem]) -> str:
+    def answer(
+        self,
+        question: str,
+        products: Sequence[CatalogItem],
+        history: Sequence[ConversationTurn] = (),
+    ) -> str:
         raise self._error
 
 
@@ -598,8 +622,11 @@ def get_telegram_assistant() -> CatalogAssistant:
 # --- Background jobs ---------------------------------------------------------------
 
 
-def send_safely(sender: TelegramSender, chat_id: int, text: str) -> None:
-    """Send a message; a failure is logged and swallowed, never raised."""
+def send_safely(sender: TelegramSender, chat_id: int, text: str) -> bool:
+    """Send a message; a failure is logged and swallowed, never raised.
+
+    Returns whether the message was sent.
+    """
     try:
         sender.send_message(chat_id, text)
     except Exception as error:
@@ -608,6 +635,12 @@ def send_safely(sender: TelegramSender, chat_id: int, text: str) -> None:
             "Telegram sendMessage failed (chat_id=%s, error=%s)",
             chat_id, type(error).__name__,
         )
+        return False
+    return True
+
+
+# Saves a (question, answer) turn of a chat; must never raise.
+RememberTurn = Callable[[int, str, str], None]
 
 
 def answer_question(
@@ -616,10 +649,18 @@ def answer_question(
     chat_id: int,
     question: str,
     products: Sequence[CatalogItem],
+    history: Sequence[ConversationTurn] = (),
+    remember: RememberTurn | None = None,
 ) -> None:
-    """Ask the assistant and send its answer, or a friendly fallback, to the chat."""
+    """Ask the assistant and send its answer, or a friendly fallback, to the chat.
+
+    Only an answer that the assistant produced and that reached the chat is
+    remembered: an error text or an undelivered reply never enters the history.
+    """
+    answered = False
     try:
-        text = assistant.answer(question, products)
+        text = assistant.answer(question, products, history=history)
+        answered = True
     except AssistantError as error:
         logger.warning(
             "Catalog assistant failed for Telegram (chat_id=%s, error=%s)",
@@ -632,4 +673,6 @@ def answer_question(
             chat_id, type(error).__name__,
         )
         text = UNAVAILABLE_TEXT
-    send_safely(sender, chat_id, text)
+    delivered = send_safely(sender, chat_id, text)
+    if answered and delivered and remember is not None:
+        remember(chat_id, question, text)

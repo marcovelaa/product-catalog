@@ -31,7 +31,7 @@ The bot is read-only and public (it only answers catalog questions). The owner w
 - [x] T1 — DONE 2026-11-25 (commits 52f69f7 + parse_command fix). Admin foundation + read-only commands: parse `from.id`, `TELEGRAM_ADMIN_IDS` config (fail closed), `/id`, `/productos`, updated `/start` and `/ayuda` text (admin commands listed only for admins). Route: delegated writer.
 - [x] T2 — DONE 2026-11-25 (commit b77f599). `/agregar` (+ Slack alert) and `/editar` through a shared product service (no public route), strict validation, clear Spanish errors, tests. Route: delegated writer.
 - [ ] T3 — User steps: deploy, send `/id`, set `TELEGRAM_ADMIN_IDS` in Render, live check of `/agregar` and `/editar`.
-- [ ] T4 (later, needs explicit user OK for DDL) — Conversation memory: table `telegram_messages` with RLS on and no public policy, keep only the last N messages per chat, purge old ones.
+- [ ] T4 — Conversation memory + Spanish-only answers (user decision 2026-11-25: "vamos con memoria y que solo responda español"). Table `telegram_messages` (RLS on, NO policies; the backend role bypasses RLS), keep only the last 10 messages per chat, `/olvidar` clears a chat, memory failures degrade silently to no memory. The shared assistant answers ONLY in Spanish (applies to web and Telegram; the web hint text is updated). Production DDL runs only after the user sees the exact SQL and says yes. Branch `feat/telegram-memory`. Route: delegated writer.
 - [ ] T5 (later) — Product photos: Telegram photo to Supabase Storage (public bucket, new credential in Render), save `image_url`, bot can show it, web shows images.
 
 ## Checks

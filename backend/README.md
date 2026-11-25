@@ -21,6 +21,7 @@ FastAPI backend for a single `products` table on Supabase Postgres.
 
 Open the Supabase dashboard -> SQL Editor, paste the contents of `sql/schema.sql`, and run it once.
 The API never creates tables by itself, so this script is what enables Row Level Security.
+For the Telegram bot's conversation memory, also run `sql/telegram_messages.sql` once (see [Conversation memory](#conversation-memory-telegram-only)); it is optional, the bot works without it.
 
 ## 2. Configure `.env`
 
@@ -127,12 +128,13 @@ Behavior:
 - `/start`, `/help` and `/ayuda` reply with usage instructions. Admins also see the admin commands; everyone else does not.
 - `/productos` lists the products as `#id Name: price · N en stock` (`agotado` when out of stock), ordered by id, without calling Gemini. A long list is cut to fit Telegram's 4096-character limit and ends with `… y N más.`.
 - `/id` replies with your Telegram user id. Anyone can use it.
+- `/olvidar` deletes what the bot remembers of the current chat and says how many messages it forgot (see [Conversation memory](#conversation-memory-telegram-only)). Anyone can use it, and it only affects the chat that sent it.
 - `/agregar` and `/editar` create and change products; they are admin-only (see [Admin commands](#admin-commands-telegram_admin_ids)). Anyone else gets "Solo el administrador puede usar este comando."
 - Any other command replies that it is unknown or not available.
 - Any other text is a catalog question, with the same limits as the API (1-500 characters). Answers are plain text.
 - The webhook acknowledges at once and sends the answer from a background task, so Telegram does not redeliver the update while Gemini is thinking.
 - Duplicate deliveries are ignored: the API remembers the last 1000 `update_id` values and acknowledges a repeated one without replying again. Limitation: this record lives in memory, so it is cleared when the service restarts or sleeps (Render free tier). It covers the common case, a redelivery within the same process lifetime, not every case.
-- The bot's fixed messages (welcome, errors) are in Spanish. Gemini answers in the language of the question.
+- The bot's fixed messages (welcome, errors) are in Spanish, and so are Gemini's answers (see [Spanish only](#spanish-only)).
 - Edited messages, stickers, photos and other updates are ignored.
 - If Gemini is rate-limited or failing, the bot replies with a short "try again" message.
 - If `TELEGRAM_BOT_TOKEN` or `TELEGRAM_WEBHOOK_SECRET` is missing, the webhook returns `503` and the rest of the API keeps working.
@@ -193,6 +195,23 @@ Every failure replies with a Spanish message that names the field and gives an e
 
 - The duplicate-delivery guard is in memory (see above). After a restart or a Render sleep, Telegram could redeliver an `/agregar` and the product would be created twice. After an unexpected delay, check with `/productos` before sending it again.
 - The database write runs inside the webhook request, before the acknowledgement (it is a quick query); only the reply and the Slack alert are sent from background tasks. If the database is down, the bot replies that it could not answer and nothing is written.
+
+### Spanish only
+
+The assistant (web chat and Telegram bot) always answers in Spanish, in a neutral and professional tone with "tú", even when the question is written in another language. Product names are kept as they appear in the catalog. The rule lives in the system instruction (`build_system_instruction` in `catalog_assistant.py`).
+
+### Conversation memory (Telegram only)
+
+The bot remembers the last messages of each chat so follow-up questions work (`¿Y cuánto cuesta?`).
+
+- **What is stored:** the text of each question you send and each answer the bot sends back, in the `telegram_messages` table, keyed by Telegram `chat_id`. Privacy note: the table holds what users write to the bot, readable by anyone with access to your Supabase project.
+- **Window:** only the last 10 messages per chat are kept (older ones are deleted on every save), and each message is cut to 1000 characters. The history is sent to Gemini as earlier conversation turns, never merged into the system instruction, so it cannot override the rules.
+- **What is not stored:** commands (`/productos`, `/id`, `/agregar`, `/editar`, `/ayuda`, `/olvidar`) and their replies, error texts, and anything when the assistant failed or the reply could not be delivered.
+- **`/olvidar`:** deletes the stored messages of the current chat only and replies how many were forgotten (or that there was nothing).
+- **The web chat has no memory:** `POST /api/v1/catalog/ask` stays stateless.
+- **Failure isolation:** if the table does not exist yet, or the database fails on a read or a write, the bot still answers (without memory) and only logs the chat id and the error class at `WARNING`. So the code can be deployed before the table exists.
+
+Create the table once, in Supabase -> SQL Editor, by pasting and running `sql/telegram_messages.sql` (idempotent, like `sql/schema.sql`). It enables Row Level Security and defines **no policies**: Supabase's public Data API can then neither read nor write the table, while the backend, which connects with a role that bypasses RLS, is not affected. Do not add a policy.
 
 ## Slack alerts
 

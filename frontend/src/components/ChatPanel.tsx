@@ -56,7 +56,7 @@ export function ChatPanel({
           Pregunta al catálogo
         </h2>
         <p className="chat__intro rise" style={{ '--d': '280ms' } as React.CSSProperties}>
-          Las respuestas salen solo de la lista de productos en vivo, en el idioma en que escribas.
+          Las respuestas salen solo de la lista de productos en vivo, siempre en español.
         </p>
       </div>
 
