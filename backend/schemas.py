@@ -17,7 +17,8 @@ class ProductBase(BaseModel):
     name: ProductName
     # float (not Decimal) so the price is serialized as a JSON number.
     price: float = Field(ge=0, allow_inf_nan=False)
-    stock: int = Field(default=0, ge=0)
+    # Upper bound = the largest Postgres `integer` (the column type in sql/schema.sql).
+    stock: int = Field(default=0, ge=0, le=2_147_483_647)
     image_url: str | None = Field(default=None, max_length=2048)
 
 

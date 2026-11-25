@@ -89,6 +89,10 @@ def test_list_products_tolerates_rows_inserted_outside_the_api(client, db_sessio
         pytest.param({"name": "   ", "price": 10}, id="whitespace-name"),
         pytest.param({"name": "Mouse", "price": -1}, id="negative-price"),
         pytest.param({"name": "Mouse", "price": 10, "stock": -1}, id="negative-stock"),
+        # The stock column is a Postgres integer (int32); larger values would fail in the
+        # database with a 500 instead of a clean validation error.
+        pytest.param({"name": "Mouse", "price": 10, "stock": 2_147_483_648}, id="stock-over-int32"),
+        pytest.param({"name": "Mouse", "price": 10, "stock": 99_999_999_999}, id="stock-huge"),
     ],
 )
 def test_create_product_rejects_invalid_payloads(client, payload):
@@ -96,6 +100,13 @@ def test_create_product_rejects_invalid_payloads(client, payload):
 
     assert response.status_code == 422
     assert client.get(PRODUCTS_URL).json() == []
+
+
+def test_create_product_accepts_the_largest_int32_stock(client):
+    response = client.post(PRODUCTS_URL, json={"name": "Bulk", "price": 1, "stock": 2_147_483_647})
+
+    assert response.status_code == 201
+    assert response.json()["stock"] == 2_147_483_647
 
 
 def test_get_database_url_fails_fast_when_unset(monkeypatch):
