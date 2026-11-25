@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
+import slack_alerts
 import telegram_bot
 from catalog_assistant import (
     MAX_CATALOG_ITEMS,
@@ -63,6 +64,10 @@ TelegramAssistant = Annotated[
     CatalogAssistant, Depends(telegram_bot.get_telegram_assistant)
 ]
 
+SlackNotifier = Annotated[
+    slack_alerts.SlackNotifier | None, Depends(slack_alerts.get_slack_notifier)
+]
+
 ASSISTANT_UNAVAILABLE = (
     status.HTTP_502_BAD_GATEWAY,
     "Catalog assistant is temporarily unavailable, try again later",
@@ -102,11 +107,29 @@ def list_products(db: DbSession):
     response_model=schemas.ProductResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_product(payload: schemas.ProductCreate, db: DbSession):
+def create_product(
+    payload: schemas.ProductCreate,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    slack: SlackNotifier,
+):
     product = models.Product(**payload.model_dump())
     db.add(product)
     db.commit()
     db.refresh(product)
+    # Optional Slack alert. The text is built here, so the background task holds
+    # no session, and it runs after the response, so it can never delay or fail it.
+    background_tasks.add_task(
+        slack_alerts.send_safely,
+        slack,
+        slack_alerts.format_product_created(
+            product.name, product.id, float(product.price), product.stock
+        ),
+    )
+    # Return the pooled connection now: the refresh above began a new transaction,
+    # and background tasks run before the session dependency is torn down. close()
+    # detaches `product` with its loaded attributes, so serializing it still works.
+    db.close()
     return product
 
 
