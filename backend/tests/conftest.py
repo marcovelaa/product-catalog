@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 import catalog_assistant  # noqa: E402
+import conversation_memory  # noqa: E402
 import telegram_bot  # noqa: E402
 import models  # noqa: E402,F401  (registers the Product table on Base.metadata)
 from database import Base, get_db  # noqa: E402
@@ -68,6 +69,16 @@ def recent_updates():
     app.dependency_overrides[telegram_bot.get_recent_updates] = lambda: recent
     yield recent
     app.dependency_overrides.pop(telegram_bot.get_recent_updates, None)
+
+
+@pytest.fixture(autouse=True)
+def memory_sessions():
+    """Give the background memory writes the in-memory test database, never SessionLocal."""
+    app.dependency_overrides[conversation_memory.get_session_factory] = (
+        lambda: TestingSessionLocal
+    )
+    yield
+    app.dependency_overrides.pop(conversation_memory.get_session_factory, None)
 
 
 @pytest.fixture

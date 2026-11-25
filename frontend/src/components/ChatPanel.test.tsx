@@ -45,6 +45,13 @@ describe('ChatPanel', () => {
     expect(input).toBeDisabled()
   })
 
+  it('tells shoppers that answers always come in Spanish', () => {
+    render(<ChatPanel {...props} />)
+
+    expect(screen.getByText(/siempre en español/)).toBeInTheDocument()
+    expect(screen.queryByText(/en el idioma en que escribas/)).toBeNull()
+  })
+
   it('announces new answers politely', () => {
     render(<ChatPanel {...props} latestAnswer="Hay tres productos en stock." />)
     expect(screen.getByText('Hay tres productos en stock.')).toHaveAttribute('aria-live', 'polite')

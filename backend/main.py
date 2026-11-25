@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 from typing import Annotated
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+import conversation_memory
 import models
 import product_service
 import schemas
@@ -69,6 +71,9 @@ TelegramRecentUpdates = Annotated[
 ]
 TelegramAdminIds = Annotated[
     frozenset[int], Depends(telegram_bot.get_telegram_admin_ids)
+]
+MemorySessions = Annotated[
+    conversation_memory.SessionFactory, Depends(conversation_memory.get_session_factory)
 ]
 
 SlackNotifier = Annotated[
@@ -165,6 +170,7 @@ def telegram_webhook(
     recent_updates: TelegramRecentUpdates,
     admin_ids: TelegramAdminIds,
     slack: SlackNotifier,
+    memory_sessions: MemorySessions,
 ) -> dict[str, bool]:
     """Receive a Telegram update and acknowledge it at once.
 
@@ -198,6 +204,10 @@ def telegram_webhook(
         if alert is not None:
             background_tasks.add_task(slack_alerts.send_safely, slack, alert)
         return TELEGRAM_ACK
+    if isinstance(interpreted, telegram_bot.Forget):
+        reply = forget_for_telegram(db, chat_id)
+        background_tasks.add_task(telegram_bot.send_safely, sender, chat_id, reply)
+        return TELEGRAM_ACK
 
     products = read_catalog_for_telegram(db, chat_id)
     if products is None:
@@ -212,11 +222,34 @@ def telegram_webhook(
         )
         return TELEGRAM_ACK
 
+    # Right after the catalog read, still before the acknowledgement: a quick
+    # query that never fails the request (no memory is the fallback).
+    history = conversation_memory.read_history_safely(db, chat_id)
     background_tasks.add_task(
         telegram_bot.answer_question,
-        sender, assistant, chat_id, interpreted.question, products,
+        sender, assistant, chat_id, interpreted.question, products, history,
+        # The background task opens its own session: this request's is closed by then.
+        functools.partial(conversation_memory.remember_turn_safely, memory_sessions),
     )
     return TELEGRAM_ACK
+
+
+def forget_for_telegram(db: Session, chat_id: int) -> str:
+    """Run /olvidar for one chat; returns the reply text.
+
+    A quick query, so it runs inline. Memory is keyed by chat id: only this chat's
+    messages are removed.
+    """
+    try:
+        return telegram_bot.forgotten_text(conversation_memory.forget(db, chat_id))
+    except Exception as error:  # Any failure, e.g. the table does not exist yet.
+        logger.warning(
+            "Forgetting the conversation failed for Telegram (chat_id=%s, error=%s)",
+            chat_id, type(error).__name__,
+        )
+        return telegram_bot.UNAVAILABLE_TEXT
+    finally:
+        db.rollback()
 
 
 def write_product_for_telegram(

@@ -9,11 +9,13 @@ import httpx
 import pytest
 from sqlalchemy.exc import OperationalError
 
+import conversation_memory
 import models
 import product_service
 import slack_alerts
 import telegram_bot
-from catalog_assistant import AssistantQuotaExceeded, AssistantUnavailable
+from catalog_assistant import AssistantQuotaExceeded, AssistantUnavailable, ConversationTurn
+from conftest import test_engine
 from database import get_db
 from main import app
 from telegram_bot import (
@@ -56,8 +58,10 @@ class FakeAssistant:
         self._error = error
         self.calls = []
 
-    def answer(self, question, products):
-        self.calls.append({"question": question, "products": list(products)})
+    def answer(self, question, products, history=()):
+        self.calls.append(
+            {"question": question, "products": list(products), "history": list(history)}
+        )
         if self._error is not None:
             raise self._error
         return self._answer
@@ -630,7 +634,7 @@ class TransactionProbeAssistant:
         self._sessions = sessions
         self.in_transaction = None
 
-    def answer(self, question, products):
+    def answer(self, question, products, history=()):
         self.in_transaction = [session.in_transaction() for session in self._sessions]
         return "ok"
 
@@ -1659,3 +1663,329 @@ def test_the_admin_help_text_matches_the_implemented_syntax():
     assert telegram_bot.EDIT_SYNTAX in section
     assert "imagen=-" in section
     assert len(telegram_bot.help_text(True)) <= MAX_MESSAGE_LENGTH
+
+
+# --- Conversation memory ---------------------------------------------------------------
+
+
+def memory_rows(db, chat_id=CHAT_ID):
+    db.expire_all()
+    return [
+        (row.role, row.content)
+        for row in db.query(models.ConversationMessage)
+        .filter_by(chat_id=chat_id)
+        .order_by(models.ConversationMessage.id)
+    ]
+
+
+def drop_memory_table():
+    models.ConversationMessage.__table__.drop(bind=test_engine)
+
+
+def use_memory_factory(factory):
+    app.dependency_overrides[conversation_memory.get_session_factory] = lambda: factory
+
+
+class BrokenMemoryFactory:
+    def __call__(self):
+        raise RuntimeError("password=hunter2 host=db.internal")
+
+
+def test_the_first_question_has_no_history_and_the_next_one_gets_the_turn(
+    client, sender, use_assistant
+):
+    fake = use_assistant(FakeAssistant(answer="Hay 5 teclados."))
+
+    post_update(client, text_update("¿Hay teclados?", update_id=1))
+    post_update(client, text_update("¿Y cuánto cuestan?", update_id=2))
+
+    first, second = fake.calls
+    assert first["history"] == []
+    assert second["history"] == [
+        ConversationTurn("user", "¿Hay teclados?"),
+        ConversationTurn("assistant", "Hay 5 teclados."),
+    ]
+    assert second["question"] == "¿Y cuánto cuestan?"
+
+
+def test_a_successful_question_stores_exactly_one_user_and_one_assistant_message(
+    client, sender, use_assistant, db_session
+):
+    use_assistant(FakeAssistant(answer="Hay 5 teclados."))
+
+    post_update(client, text_update("  ¿Hay teclados?  "))
+
+    assert memory_rows(db_session) == [
+        ("user", "¿Hay teclados?"),
+        ("assistant", "Hay 5 teclados."),
+    ]
+
+
+def test_the_reply_is_sent_to_the_chat_as_before(client, sender, use_assistant):
+    use_assistant(FakeAssistant(answer="Hay 5 teclados."))
+
+    post_update(client, text_update("¿Hay teclados?"))
+
+    assert sender.sent == [(CHAT_ID, "Hay 5 teclados.")]
+
+
+def test_the_history_sent_to_the_assistant_never_exceeds_ten_messages(
+    client, sender, use_assistant, db_session
+):
+    fake = use_assistant(FakeAssistant(answer="ok"))
+
+    for n in range(1, 9):
+        post_update(client, text_update(f"q{n}", update_id=n))
+
+    assert len(fake.calls[-1]["history"]) == conversation_memory.MAX_HISTORY_MESSAGES
+    assert fake.calls[-1]["history"][0] == ConversationTurn("user", "q3")
+    assert len(memory_rows(db_session)) == conversation_memory.MAX_HISTORY_MESSAGES
+
+
+def test_a_chat_never_gets_the_history_of_another_chat(client, sender, use_assistant):
+    fake = use_assistant(FakeAssistant(answer="Respuesta"))
+
+    post_update(client, text_update("pregunta de A", chat_id=1, update_id=1))
+    post_update(client, text_update("pregunta de B", chat_id=2, update_id=2))
+    post_update(client, text_update("otra de A", chat_id=1, update_id=3))
+
+    _, b_call, a_call = fake.calls
+    assert b_call["history"] == []
+    assert [turn.content for turn in a_call["history"]] == ["pregunta de A", "Respuesta"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(AssistantUnavailable("outage"), id="unavailable"),
+        pytest.param(AssistantQuotaExceeded("quota"), id="quota"),
+        pytest.param(RuntimeError("boom"), id="unexpected"),
+    ],
+)
+def test_an_assistant_failure_stores_nothing(
+    client, sender, use_assistant, db_session, error
+):
+    use_assistant(FakeAssistant(error=error))
+
+    post_update(client, text_update("¿Hay teclados?"))
+
+    assert memory_rows(db_session) == []
+    assert len(sender.sent) == 1  # The friendly error text only.
+
+
+def test_a_missing_assistant_key_stores_nothing(client, sender, db_session):
+    post_update(client, text_update("¿Hay teclados?"))
+
+    assert memory_rows(db_session) == []
+
+
+def test_a_reply_that_could_not_be_delivered_is_not_remembered(
+    client, telegram_env, use_sender, use_assistant, db_session
+):
+    use_sender(FakeSender(error=TelegramSendError("Bot API returned HTTP 500")))
+    use_assistant(FakeAssistant(answer="Hay 5."))
+
+    response = post_update(client, text_update("¿Hay teclados?"))
+
+    assert response.status_code == 200
+    assert memory_rows(db_session) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/start",
+        "/ayuda",
+        "/id",
+        "/productos",
+        "/agregar Mouse; 10; 5",
+        "/editar 1 precio=12",
+        "/agregar mal",
+        "/desconocido",
+        "/olvidar",
+        "x" * 501,
+    ],
+)
+def test_commands_and_their_replies_are_never_stored(
+    client, sender, assistant, admin, db_session, command
+):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10})
+
+    response = post_update(client, text_update(command))
+
+    assert response.status_code == 200
+    assert memory_rows(db_session) == []
+    assert assistant.calls == []
+
+
+def test_a_redelivered_question_is_stored_once(client, sender, assistant, db_session):
+    post_update(client, text_update("¿Hay teclados?", update_id=77))
+    post_update(client, text_update("¿Hay teclados?", update_id=77))
+
+    assert len(memory_rows(db_session)) == 2
+    assert len(assistant.calls) == 1
+
+
+# Failure isolation: the code can be deployed before the table exists.
+
+
+def test_a_missing_memory_table_still_answers_the_question(
+    client, sender, use_assistant, db_session
+):
+    fake = use_assistant(FakeAssistant(answer="Hay 5."))
+    drop_memory_table()
+
+    response = post_update(client, text_update("¿Hay teclados?"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, "Hay 5.")]
+    assert fake.calls[0]["history"] == []
+
+
+def test_a_memory_read_failure_keeps_the_catalog_and_releases_the_connection(
+    client, sender, use_assistant, request_sessions
+):
+    probe = use_assistant(TransactionProbeAssistant(request_sessions))
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 3})
+    request_sessions.clear()
+    drop_memory_table()
+
+    post_update(client, text_update("¿Hay ratones?"))
+
+    assert probe.in_transaction == [False]
+    assert sender.sent == [(CHAT_ID, "ok")]
+
+
+def test_a_memory_write_failure_still_sends_the_answer(
+    client, sender, use_assistant, caplog
+):
+    use_assistant(FakeAssistant(answer="Hay 5."))
+    use_memory_factory(BrokenMemoryFactory())
+
+    with caplog.at_level(logging.WARNING):
+        response = post_update(client, text_update("¿Hay teclados?"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, "Hay 5.")]
+    assert str(CHAT_ID) in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "hunter2" not in caplog.text
+
+
+def test_memory_failures_never_log_message_contents(
+    client, sender, use_assistant, caplog
+):
+    use_assistant(FakeAssistant(answer="secret answer"))
+    drop_memory_table()
+
+    with caplog.at_level(logging.WARNING):
+        post_update(client, text_update("secret question"))
+
+    assert "OperationalError" in caplog.text
+    assert "secret" not in caplog.text
+
+
+# /olvidar
+
+
+def test_olvidar_clears_this_chat_and_says_how_many_messages_it_forgot(
+    client, sender, assistant, db_session
+):
+    conversation_memory.remember_turn(db_session, CHAT_ID, "q1", "a1")
+    conversation_memory.remember_turn(db_session, CHAT_ID, "q2", "a2")
+
+    response = post_update(client, text_update("/olvidar"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.forgotten_text(4))]
+    assert "4 mensajes" in telegram_bot.forgotten_text(4)
+    assert memory_rows(db_session) == []
+    assert assistant.calls == []
+
+
+def test_olvidar_uses_the_singular_for_one_message():
+    assert "1 mensaje" in telegram_bot.forgotten_text(1)
+    assert "mensajes" not in telegram_bot.forgotten_text(1)
+
+
+def test_olvidar_with_nothing_stored_says_so(client, sender, assistant):
+    post_update(client, text_update("/olvidar"))
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.NOTHING_TO_FORGET_TEXT)]
+
+
+def test_olvidar_only_clears_the_chat_that_sent_it(client, sender, assistant, db_session):
+    conversation_memory.remember_turn(db_session, 1, "mine", "mine")
+    conversation_memory.remember_turn(db_session, 2, "yours", "yours")
+
+    post_update(client, text_update("/olvidar", chat_id=1))
+
+    assert memory_rows(db_session, 1) == []
+    assert memory_rows(db_session, 2) == [("user", "yours"), ("assistant", "yours")]
+
+
+@pytest.mark.parametrize("command", ["/OLVIDAR", "/olvidar@CatalogBot", "/olvidar ahora"])
+def test_olvidar_accepts_the_bot_suffix_case_and_a_payload(
+    client, sender, assistant, db_session, command
+):
+    conversation_memory.remember_turn(db_session, CHAT_ID, "q", "a")
+
+    post_update(client, text_update(command))
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.forgotten_text(2))]
+
+
+def test_olvidar_is_open_to_non_admins(client, sender, assistant, use_admins, db_session):
+    use_admins(999)
+    conversation_memory.remember_turn(db_session, CHAT_ID, "q", "a")
+
+    post_update(client, text_update("/olvidar"))
+
+    assert memory_rows(db_session) == []
+
+
+def test_the_assistant_gets_no_history_after_olvidar(client, sender, use_assistant):
+    fake = use_assistant(FakeAssistant(answer="ok"))
+    post_update(client, text_update("antes", update_id=1))
+    post_update(client, text_update("/olvidar", update_id=2))
+
+    post_update(client, text_update("después", update_id=3))
+
+    assert fake.calls[-1]["history"] == []
+
+
+def test_olvidar_without_the_table_replies_with_the_unavailable_text(
+    client, sender, assistant
+):
+    drop_memory_table()
+
+    response = post_update(client, text_update("/olvidar"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.UNAVAILABLE_TEXT)]
+
+
+def test_olvidar_leaves_no_session_in_a_transaction(
+    client, sender, assistant, request_sessions
+):
+    request_sessions.clear()
+
+    post_update(client, text_update("/olvidar"))
+
+    assert [session.in_transaction() for session in request_sessions] == [False]
+
+
+def test_olvidar_is_listed_in_the_help_text_for_everyone():
+    assert "/olvidar" in telegram_bot.WELCOME_TEXT
+    assert "/olvidar" in telegram_bot.help_text(True)
+
+
+def test_olvidar_duplicate_delivery_replies_once(client, sender, assistant):
+    post_update(client, text_update("/olvidar", update_id=9))
+    post_update(client, text_update("/olvidar", update_id=9))
+
+    assert len(sender.sent) == 1
+
+
+def test_the_welcome_text_makes_no_claim_about_answering_in_other_languages():
+    assert "idioma" not in telegram_bot.WELCOME_TEXT.lower()
