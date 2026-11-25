@@ -3,6 +3,7 @@ the catalog assistant are always faked (or use httpx.MockTransport)."""
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -57,9 +58,9 @@ class FakeAssistant:
         return self._answer
 
 
-def text_update(text, chat_id=CHAT_ID):
+def text_update(text, chat_id=CHAT_ID, update_id=1001):
     return {
-        "update_id": 1001,
+        "update_id": update_id,
         "message": {
             "message_id": 7,
             "date": 1_700_000_000,
@@ -230,6 +231,16 @@ def test_start_and_help_send_the_welcome_text(client, sender, assistant, command
     assert assistant.calls == []
 
 
+def test_welcome_text_is_neutral_spanish_with_the_question_limits():
+    text = telegram_bot.WELCOME_TEXT
+
+    assert text.startswith("¡Hola! Soy el asistente del catálogo de productos.")
+    assert "¿Tienen teclados por menos de 100?" in text
+    assert "¿Qué productos están agotados?" in text
+    assert "de 1 a 500 caracteres" in text
+    assert "Hi!" not in text
+
+
 def test_unknown_commands_get_the_welcome_text_instead_of_a_model_call(
     client, sender, assistant
 ):
@@ -296,8 +307,9 @@ def test_invalid_question_gets_a_friendly_message_without_a_model_call(
 
     assert response.status_code == 200
     assert assistant.calls == []
-    assert sender.sent == [(CHAT_ID, telegram_bot.INVALID_QUESTION_TEXT)]
-    assert "500" in telegram_bot.INVALID_QUESTION_TEXT
+    assert sender.sent == [
+        (CHAT_ID, "Por favor, envía una pregunta de entre 1 y 500 caracteres.")
+    ]
 
 
 def test_question_of_exactly_500_characters_is_answered(client, sender, assistant):
@@ -311,12 +323,13 @@ def test_question_of_exactly_500_characters_is_answered(client, sender, assistan
     [
         pytest.param(
             AssistantQuotaExceeded("provider detail: quota"),
-            telegram_bot.BUSY_TEXT,
+            "El asistente está ocupado en este momento. Inténtalo de nuevo en un minuto.",
             id="quota",
         ),
         pytest.param(
             AssistantUnavailable("provider detail: outage"),
-            telegram_bot.UNAVAILABLE_TEXT,
+            "Lo siento, no he podido responder ahora mismo. "
+            "Inténtalo de nuevo en un minuto.",
             id="unavailable",
         ),
     ],
@@ -338,7 +351,13 @@ def test_question_without_a_gemini_key_sends_the_not_configured_fallback(client,
     response = post_update(client, text_update("Do you have keyboards?"))
 
     assert response.status_code == 200
-    assert sender.sent == [(CHAT_ID, telegram_bot.NOT_CONFIGURED_TEXT)]
+    assert sender.sent == [
+        (
+            CHAT_ID,
+            "El asistente del catálogo aún no está configurado. "
+            "Inténtalo de nuevo más tarde.",
+        )
+    ]
 
 
 class FailingSession:
@@ -370,8 +389,138 @@ def test_database_failure_sends_a_fallback_and_still_acknowledges(
 
     assert response.status_code == 200
     assert assistant.calls == []
-    assert sender.sent == [(CHAT_ID, telegram_bot.UNAVAILABLE_TEXT)]
+    assert sender.sent == [
+        (
+            CHAT_ID,
+            "Lo siento, no he podido responder ahora mismo. "
+            "Inténtalo de nuevo en un minuto.",
+        )
+    ]
     assert session.rolled_back
+
+
+# --- Duplicate deliveries (update_id de-duplication) ------------------------------
+
+
+class QuerySpySession:
+    """A DB session that fails loudly if anything tries to query it."""
+
+    def __init__(self):
+        self.executed = 0
+
+    def execute(self, *args, **kwargs):
+        self.executed += 1
+        raise AssertionError("a duplicate update must not query the database")
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_same_update_id_sent_twice_yields_exactly_one_reply(client, sender, assistant):
+    first = post_update(client, text_update("Do you have keyboards?", update_id=55))
+    second = post_update(client, text_update("Do you have keyboards?", update_id=55))
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert len(sender.sent) == 1
+    assert len(assistant.calls) == 1
+
+
+def test_different_update_ids_each_get_a_reply(client, sender, assistant):
+    post_update(client, text_update("/start", update_id=1))
+    post_update(client, text_update("/start", update_id=2))
+
+    assert len(sender.sent) == 2
+
+
+def test_duplicate_update_does_not_call_the_assistant_or_the_database(
+    client, sender, assistant
+):
+    post_update(client, text_update("Do you have keyboards?", update_id=9))
+    spy = QuerySpySession()
+    previous_get_db = app.dependency_overrides[get_db]
+    app.dependency_overrides[get_db] = lambda: spy
+    try:
+        response = post_update(client, text_update("Do you have keyboards?", update_id=9))
+    finally:
+        app.dependency_overrides[get_db] = previous_get_db
+
+    assert response.status_code == 200
+    assert spy.executed == 0
+    assert len(assistant.calls) == 1
+    assert len(sender.sent) == 1
+
+
+def test_update_is_marked_as_seen_even_when_it_has_no_text(client, sender, assistant):
+    post_update(client, {"update_id": 77, "callback_query": {"id": "1"}})
+
+    assert post_update(client, text_update("/start", update_id=77)).status_code == 200
+    assert sender.sent == []
+
+
+def test_webhook_still_works_for_updates_without_an_update_id(client, sender, assistant):
+    update = text_update("/start")
+    del update["update_id"]
+
+    post_update(client, update)
+    post_update(client, update)
+
+    # Nothing to de-duplicate on: each delivery is handled as before.
+    assert len(sender.sent) == 2
+
+
+def test_unauthenticated_request_does_not_mark_the_update_as_seen(
+    client, sender, assistant
+):
+    post_update(client, text_update("/start", update_id=5), secret="wrong-secret")
+
+    post_update(client, text_update("/start", update_id=5))
+
+    assert len(sender.sent) == 1
+
+
+def test_recent_updates_reports_a_new_id_once():
+    recent = telegram_bot.RecentUpdates()
+
+    assert recent.first_time(1) is True
+    assert recent.first_time(1) is False
+    assert recent.first_time(2) is True
+
+
+def test_recent_updates_is_bounded_and_evicts_the_oldest_first():
+    recent = telegram_bot.RecentUpdates(max_entries=3)
+    for update_id in (1, 2, 3, 4):
+        assert recent.first_time(update_id) is True
+
+    assert len(recent) == 3
+    assert recent.first_time(1) is True  # evicted, so it counts as new again
+    assert recent.first_time(4) is False  # recent ids are still remembered
+
+
+def test_recent_updates_default_capacity_is_one_thousand():
+    recent = telegram_bot.RecentUpdates()
+    for update_id in range(telegram_bot.MAX_RECENT_UPDATES + 5):
+        recent.first_time(update_id)
+
+    assert telegram_bot.MAX_RECENT_UPDATES == 1000
+    assert len(recent) == telegram_bot.MAX_RECENT_UPDATES
+
+
+def test_recent_updates_rejects_a_non_positive_capacity():
+    with pytest.raises(ValueError):
+        telegram_bot.RecentUpdates(max_entries=0)
+
+
+def test_recent_updates_is_safe_under_concurrent_use():
+    recent = telegram_bot.RecentUpdates()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(recent.first_time, [42] * 200))
+
+    assert results.count(True) == 1
 
 
 # --- Sender failures ---------------------------------------------------------
