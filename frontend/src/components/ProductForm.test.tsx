@@ -21,7 +21,8 @@ describe('ProductForm', () => {
 
     expect(screen.getByRole('heading', { name: 'Añadir un producto' })).toBeInTheDocument()
     expect(screen.getByLabelText('Nombre')).toBeRequired()
-    expect(screen.getByLabelText('Precio')).toHaveAttribute('inputmode', 'decimal')
+    expect(screen.getByLabelText('Precio (Bs)')).toHaveAttribute('inputmode', 'decimal')
+    expect(screen.getByText('En bolivianos (Bs). Por ejemplo 25,50.')).toBeInTheDocument()
     expect(screen.getByLabelText('Stock')).toHaveAttribute('inputmode', 'numeric')
     expect(screen.getByLabelText('Enlace de imagen (opcional)')).toHaveAttribute('inputmode', 'url')
   })
@@ -40,7 +41,7 @@ describe('ProductForm', () => {
     const errorId = describedBy.split(' ').find((id) => document.getElementById(id)?.textContent === 'Escribe un nombre.')
     expect(errorId).toBeTruthy()
 
-    expect(screen.getByLabelText('Precio')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('Precio (Bs)')).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByLabelText('Stock')).toHaveAttribute('aria-invalid', 'false')
     expect(screen.getByText('Escribe un precio.')).toBeInTheDocument()
   })

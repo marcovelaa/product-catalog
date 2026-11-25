@@ -340,6 +340,12 @@ def test_system_instruction_contains_catalog_as_compact_json():
     assert expected_json in instruction
 
 
+def test_system_instruction_says_prices_are_in_bolivianos():
+    instruction = build_system_instruction(PRODUCTS)
+
+    assert "bolivianos (Bs)" in instruction
+
+
 def test_system_instruction_omits_image_urls():
     product = SimpleNamespace(
         id=1, name="Mouse", price=10, stock=1, image_url="https://example.com/m.png"

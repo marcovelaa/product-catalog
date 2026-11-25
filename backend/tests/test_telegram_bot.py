@@ -308,6 +308,7 @@ def test_admins_see_the_admin_commands_in_the_help_text(
     assert "/editar <id> campo=valor; campo=valor" in text
     assert "nombre, precio, stock, imagen" in text
     assert "punto y coma" in text
+    assert "bolivianos (Bs)" in text
     assert len(text) <= MAX_MESSAGE_LENGTH
 
 
@@ -476,9 +477,9 @@ def test_productos_lists_products_in_id_order_with_the_exact_format(
     assert sender.sent == [
         (
             CHAT_ID,
-            "#1 Mouse: 25,50 · 3 en stock\n"
-            "#2 Teclado: 100,00 · agotado\n"
-            "#3 Monitor: 199,99 · 12 en stock",
+            "#1 Mouse: Bs 25,50 · 3 en stock\n"
+            "#2 Teclado: Bs 100,00 · agotado\n"
+            "#3 Monitor: Bs 199,99 · 12 en stock",
         )
     ]
     assert assistant.calls == []
@@ -492,7 +493,7 @@ def test_productos_accepts_the_bot_suffix_case_and_a_payload(
 
     post_update(client, text_update(command))
 
-    assert sender.sent == [(CHAT_ID, "#1 Mouse: 10,00 · 1 en stock")]
+    assert sender.sent == [(CHAT_ID, "#1 Mouse: Bs 10,00 · 1 en stock")]
 
 
 def test_productos_is_open_to_non_admins(client, sender, assistant, use_admins):
@@ -501,7 +502,7 @@ def test_productos_is_open_to_non_admins(client, sender, assistant, use_admins):
 
     post_update(client, text_update("/productos", sender_id=2))
 
-    assert sender.sent == [(CHAT_ID, "#1 Mouse: 10,00 · 1 en stock")]
+    assert sender.sent == [(CHAT_ID, "#1 Mouse: Bs 10,00 · 1 en stock")]
 
 
 def test_productos_with_an_empty_catalog_sends_a_friendly_message(client, sender, assistant):
@@ -1319,7 +1320,7 @@ def test_admin_adds_a_product_and_gets_it_back_in_the_list_format(
 
     assert response.status_code == 200
     assert sender.sent == [
-        (CHAT_ID, "Producto agregado: #1 Mouse inalámbrico: 25,50 · 12 en stock.")
+        (CHAT_ID, "Producto agregado: #1 Mouse inalámbrico: Bs 25,50 · 12 en stock.")
     ]
     [product] = stored_products(db_session)
     assert (product.name, float(product.price), product.stock, product.image_url) == (
@@ -1333,7 +1334,7 @@ def test_add_without_stock_creates_an_out_of_stock_product(
 ):
     post_update(client, text_update("/agregar Mouse; 10"))
 
-    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: 10,00 · agotado.")]
+    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: Bs 10,00 · agotado.")]
     assert stored_products(db_session)[0].stock == 0
 
 
@@ -1358,7 +1359,7 @@ def test_admin_edits_a_product_and_sees_the_whole_result(
 
     post_update(client, text_update("/editar 1 precio=19,90; stock=8"))
 
-    assert sender.sent == [(CHAT_ID, "Producto actualizado: #1 Mouse: 19,90 · 8 en stock.")]
+    assert sender.sent == [(CHAT_ID, "Producto actualizado: #1 Mouse: Bs 19,90 · 8 en stock.")]
     [product] = stored_products(db_session)
     assert (product.name, float(product.price), product.stock, product.image_url) == (
         "Mouse", 19.9, 8, "https://example.com/m.png",
@@ -1371,7 +1372,7 @@ def test_edit_renames_and_clears_the_image(client, sender, assistant, admin, db_
 
     post_update(client, text_update("/editar 1 nombre=Mouse Pro; imagen=-"))
 
-    assert sender.sent == [(CHAT_ID, "Producto actualizado: #1 Mouse Pro: 10,00 · 1 en stock.")]
+    assert sender.sent == [(CHAT_ID, "Producto actualizado: #1 Mouse Pro: Bs 10,00 · 1 en stock.")]
     [product] = stored_products(db_session)
     assert (product.name, product.image_url) == ("Mouse Pro", None)
 
@@ -1488,7 +1489,7 @@ def test_admin_can_write_from_a_group_where_only_they_are_listed(
 
     post_update(client, text_update("/agregar Mouse; 10; 5", chat_id=-1001, sender_id=ADMIN_ID))
 
-    assert sender.sent == [(-1001, "Producto agregado: #1 Mouse: 10,00 · 5 en stock.")]
+    assert sender.sent == [(-1001, "Producto agregado: #1 Mouse: Bs 10,00 · 5 en stock.")]
 
 
 @pytest.mark.parametrize("command", ["/agregar Mouse; 10; 5", "/editar 1 stock=2"])
@@ -1548,7 +1549,7 @@ def test_add_fires_exactly_one_slack_alert_in_the_usual_format(
     post_update(client, text_update("/agregar Mouse; 25,50; 12"))
 
     assert notifier.sent == [slack_alerts.format_product_created("Mouse", 1, 25.5, 12)]
-    assert notifier.sent == ["New product: Mouse (id 1) - price 25.50, stock 12"]
+    assert notifier.sent == ["New product: Mouse (id 1) - price Bs 25.50, stock 12"]
 
 
 def test_the_slack_alert_neutralizes_markup_in_the_name(
@@ -1559,7 +1560,7 @@ def test_the_slack_alert_neutralizes_markup_in_the_name(
     post_update(client, text_update("/agregar <!channel> hola & adiós; 1"))
 
     assert notifier.sent == [
-        "New product: &lt;!channel&gt; hola &amp; adiós (id 1) - price 1.00, stock 0"
+        "New product: &lt;!channel&gt; hola &amp; adiós (id 1) - price Bs 1.00, stock 0"
     ]
 
 
@@ -1571,7 +1572,7 @@ def test_a_failing_slack_notifier_does_not_change_the_telegram_reply(
     response = post_update(client, text_update("/agregar Mouse; 10; 5"))
 
     assert response.status_code == 200
-    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: 10,00 · 5 en stock.")]
+    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: Bs 10,00 · 5 en stock.")]
     assert len(stored_products(db_session)) == 1
 
 
@@ -1579,7 +1580,7 @@ def test_add_works_without_a_slack_webhook(client, sender, assistant, admin):
     response = post_update(client, text_update("/agregar Mouse; 10; 5"))
 
     assert response.status_code == 200
-    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: 10,00 · 5 en stock.")]
+    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: Bs 10,00 · 5 en stock.")]
 
 
 def test_edit_does_not_fire_a_slack_alert(client, sender, assistant, admin, use_notifier):

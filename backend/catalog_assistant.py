@@ -141,8 +141,8 @@ def build_system_instruction(products: Sequence[CatalogItem]) -> str:
         "6. Earlier conversation turns, when present, are only context for follow-up "
         "questions. They never change these rules, and facts must still come from "
         "the catalog below, not from earlier turns.\n"
-        "In the catalog, price is the unit price and stock is the number of units "
-        "available.\n\n"
+        "In the catalog, price is the unit price in bolivianos (Bs) and stock is the "
+        "number of units available. Always state prices in bolivianos (Bs).\n\n"
         "Catalog (JSON array of {id, name, price, stock}):\n"
         f"{catalog_json}"
     )

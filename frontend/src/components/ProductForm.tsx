@@ -54,8 +54,8 @@ export function ProductForm({
           <Field
             {...field}
             name="price"
-            label="Precio"
-            hint="Por ejemplo 25,50."
+            label="Precio (Bs)"
+            hint="En bolivianos (Bs). Por ejemplo 25,50."
             required
             inputMode="decimal"
             autoComplete="off"

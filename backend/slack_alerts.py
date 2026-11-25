@@ -45,7 +45,7 @@ def format_product_created(name: str, product_id: int, price: float, stock: int)
         shown = neutralize_mrkdwn(collapsed[:MAX_NAME_LENGTH]) + "..."
     else:
         shown = neutralize_mrkdwn(collapsed)
-    return f"New product: {shown} (id {product_id}) - price {price:.2f}, stock {stock}"
+    return f"New product: {shown} (id {product_id}) - price Bs {price:.2f}, stock {stock}"
 
 
 # --- Port and adapter --------------------------------------------------------------
