@@ -9,6 +9,7 @@ import httpx
 import pytest
 from sqlalchemy.exc import OperationalError
 
+import models
 import telegram_bot
 from catalog_assistant import AssistantQuotaExceeded, AssistantUnavailable
 from database import get_db
@@ -18,6 +19,7 @@ from telegram_bot import (
     SECRET_TOKEN_HEADER,
     HttpxTelegramSender,
     TelegramSendError,
+    get_telegram_admin_ids,
     get_telegram_assistant,
     get_telegram_sender,
 )
@@ -58,14 +60,15 @@ class FakeAssistant:
         return self._answer
 
 
-def text_update(text, chat_id=CHAT_ID, update_id=1001):
+def text_update(text, chat_id=CHAT_ID, update_id=1001, sender_id=None):
+    sender_id = chat_id if sender_id is None else sender_id
     return {
         "update_id": update_id,
         "message": {
             "message_id": 7,
             "date": 1_700_000_000,
             "chat": {"id": chat_id, "type": "private"},
-            "from": {"id": chat_id, "is_bot": False, "first_name": "Ana"},
+            "from": {"id": sender_id, "is_bot": False, "first_name": "Ana"},
             "text": text,
         },
     }
@@ -95,6 +98,15 @@ def use_sender():
 @pytest.fixture
 def sender(telegram_env, use_sender):
     return use_sender(FakeSender())
+
+
+@pytest.fixture
+def use_admins():
+    def install(*admin_ids):
+        app.dependency_overrides[get_telegram_admin_ids] = lambda: frozenset(admin_ids)
+
+    yield install
+    app.dependency_overrides.pop(get_telegram_admin_ids, None)
 
 
 @pytest.fixture
@@ -222,8 +234,11 @@ def test_webhook_ignores_a_body_that_is_not_json(client, sender, assistant):
 # --- Commands ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", ["/start", "/help", "/start@CatalogBot", "/HELP"])
-def test_start_and_help_send_the_welcome_text(client, sender, assistant, command):
+@pytest.mark.parametrize(
+    "command",
+    ["/start", "/help", "/ayuda", "/start@CatalogBot", "/HELP", "/ayuda por favor"],
+)
+def test_start_help_and_ayuda_send_the_welcome_text(client, sender, assistant, command):
     response = post_update(client, text_update(command))
 
     assert response.status_code == 200
@@ -238,16 +253,372 @@ def test_welcome_text_is_neutral_spanish_with_the_question_limits():
     assert "¿Tienen teclados por menos de 100?" in text
     assert "¿Qué productos están agotados?" in text
     assert "de 1 a 500 caracteres" in text
+    assert "cerca de un minuto" in text
     assert "Hi!" not in text
 
 
-def test_unknown_commands_get_the_welcome_text_instead_of_a_model_call(
-    client, sender, assistant
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/agregar Mouse; 25,50; 12", ("agregar", "Mouse; 25,50; 12")),
+        ("/agregar\nMouse; 25,50; 12", ("agregar", "Mouse; 25,50; 12")),
+        ("/agregar\tMouse; 25,50; 12", ("agregar", "Mouse; 25,50; 12")),
+        ("/agregar \n  Mouse", ("agregar", "Mouse")),
+        ("/editar@MiBot 3 precio=30", ("editar", "3 precio=30")),
+        ("/ID", ("id", "")),
+        ("/id\n", ("id", "")),
+        ("/", ("", "")),
+    ],
+)
+def test_parse_command_splits_on_any_whitespace(text, expected):
+    assert telegram_bot.parse_command(text) == expected
+
+
+def test_parse_command_ignores_plain_text():
+    assert telegram_bot.parse_command("¿Cuánto cuesta el mouse?") is None
+
+
+def test_welcome_text_lists_the_public_commands_but_no_admin_commands():
+    text = telegram_bot.WELCOME_TEXT
+
+    assert "/productos" in text
+    assert "/id" in text
+    assert "/agregar" not in text
+    assert "/editar" not in text
+
+
+def test_admins_see_the_admin_commands_in_the_help_text(
+    client, sender, assistant, use_admins
 ):
-    post_update(client, text_update("/settings"))
+    use_admins(CHAT_ID)
+
+    post_update(client, text_update("/ayuda"))
+
+    [(chat_id, text)] = sender.sent
+    assert chat_id == CHAT_ID
+    assert text.startswith(telegram_bot.WELCOME_TEXT)
+    assert "/agregar Nombre; precio; stock; url opcional" in text
+    assert "/editar <id> campo=valor; campo=valor" in text
+    assert "nombre, precio, stock, imagen" in text
+    assert "punto y coma" in text
+    assert len(text) <= MAX_MESSAGE_LENGTH
+
+
+def test_non_admins_do_not_see_the_admin_commands(client, sender, assistant, use_admins):
+    use_admins(999_999)
+
+    post_update(client, text_update("/help"))
 
     assert sender.sent == [(CHAT_ID, telegram_bot.WELCOME_TEXT)]
+
+
+def test_nobody_is_admin_when_the_allow_list_is_empty(client, sender, assistant, use_admins):
+    use_admins()
+
+    post_update(client, text_update("/help"))
+
+    assert "/agregar" not in sender.sent[0][1]
+
+
+def test_the_sender_id_decides_admin_rights_never_the_chat_id(
+    client, sender, assistant, use_admins
+):
+    admin_id = 555
+    use_admins(admin_id)
+
+    # A group whose chat id equals an admin id, written by someone else.
+    post_update(client, text_update("/help", chat_id=admin_id, sender_id=999, update_id=1))
+    # The real admin writing in a group chat.
+    post_update(client, text_update("/help", chat_id=-100123, sender_id=admin_id, update_id=2))
+
+    (first_chat, first_text), (second_chat, second_text) = sender.sent
+    assert first_chat == admin_id
+    assert "/agregar" not in first_text
+    assert second_chat == -100123
+    assert "/agregar" in second_text
+
+
+def test_messages_without_a_sender_are_never_admin(client, sender, assistant, use_admins):
+    use_admins(CHAT_ID)
+    update = text_update("/help")
+    del update["message"]["from"]
+
+    post_update(client, update)
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.WELCOME_TEXT)]
+
+
+def test_admin_ids_come_from_the_environment_when_not_overridden(
+    client, sender, assistant, monkeypatch
+):
+    monkeypatch.setenv("TELEGRAM_ADMIN_IDS", f" abc, , {CHAT_ID} ,-7")
+
+    post_update(client, text_update("/help", update_id=1))
+    post_update(client, text_update("/help", update_id=2, sender_id=7))
+
+    assert "/agregar" in sender.sent[0][1]
+    assert "/agregar" not in sender.sent[1][1]
+
+
+def test_commands_work_without_any_admin_configuration(client, sender, assistant):
+    # conftest blanks TELEGRAM_ADMIN_IDS: nobody is admin, and nothing crashes.
+    response = post_update(client, text_update("/help"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.WELCOME_TEXT)]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(None, set(), id="missing"),
+        pytest.param("", set(), id="empty"),
+        pytest.param("   ", set(), id="blank"),
+        pytest.param("123", {123}, id="single"),
+        pytest.param("123,456", {123, 456}, id="two"),
+        pytest.param(" 123 , 456 ,, ,", {123, 456}, id="spaces-and-empty-items"),
+        pytest.param("abc,123,4x5,1.5,0x10", {123}, id="junk-ignored"),
+        pytest.param("-100123,0,5", {5}, id="non-positive-ignored"),
+        pytest.param("١٢٣,7", {7}, id="non-ascii-digits-ignored"),
+        pytest.param("1,1,1", {1}, id="duplicates"),
+    ],
+)
+def test_parse_admin_ids_is_tolerant(raw, expected):
+    assert telegram_bot.parse_admin_ids(raw) == frozenset(expected)
+
+
+def test_get_telegram_admin_ids_reads_the_environment(monkeypatch):
+    assert telegram_bot.get_telegram_admin_ids() == frozenset()
+
+    monkeypatch.setenv("TELEGRAM_ADMIN_IDS", "10, 20")
+
+    assert telegram_bot.get_telegram_admin_ids() == frozenset({10, 20})
+
+
+# --- /id ---------------------------------------------------------------------
+
+
+def test_id_replies_with_the_sender_id_to_anyone(client, sender, assistant):
+    post_update(client, text_update("/id", chat_id=-100123, sender_id=987654321))
+
+    assert sender.sent == [(-100123, "Tu ID de usuario de Telegram es 987654321.")]
     assert assistant.calls == []
+
+
+@pytest.mark.parametrize("command", ["/id@CatalogBot", "/ID", "/id please"])
+def test_id_accepts_the_bot_suffix_case_and_a_payload(client, sender, assistant, command):
+    post_update(client, text_update(command, sender_id=31337))
+
+    assert sender.sent == [(CHAT_ID, "Tu ID de usuario de Telegram es 31337.")]
+
+
+def test_id_without_a_sender_says_the_id_is_not_available(client, sender, assistant):
+    update = text_update("/id")
+    del update["message"]["from"]
+
+    response = post_update(client, update)
+
+    assert response.status_code == 200
+    [(chat_id, text)] = sender.sent
+    assert chat_id == CHAT_ID
+    assert "no está disponible" in text
+    assert "Tu ID de usuario" not in text
+
+
+def test_questions_still_work_without_a_sender_field(client, sender, use_assistant):
+    fake = use_assistant(FakeAssistant(answer="Yes."))
+    update = text_update("Do you have keyboards?")
+    del update["message"]["from"]
+
+    post_update(client, update)
+
+    assert len(fake.calls) == 1
+    assert sender.sent == [(CHAT_ID, "Yes.")]
+
+
+def test_a_channel_post_style_payload_without_from_is_accepted(client, sender, assistant):
+    update = {
+        "update_id": 3,
+        "message": {"message_id": 1, "chat": {"id": -1001, "type": "channel"}, "text": "/start"},
+    }
+
+    assert post_update(client, update).status_code == 200
+    assert sender.sent == [(-1001, telegram_bot.WELCOME_TEXT)]
+
+
+# --- /productos --------------------------------------------------------------
+
+
+def add_product(db, name, price, stock):
+    product = models.Product(name=name, price=price, stock=stock)
+    db.add(product)
+    db.commit()
+    return product
+
+
+def test_productos_lists_products_in_id_order_with_the_exact_format(
+    client, sender, assistant
+):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 25.5, "stock": 3})
+    client.post(PRODUCTS_URL, json={"name": "Teclado", "price": 100, "stock": 0})
+    client.post(PRODUCTS_URL, json={"name": "Monitor", "price": 199.99, "stock": 12})
+
+    response = post_update(client, text_update("/productos"))
+
+    assert response.status_code == 200
+    assert sender.sent == [
+        (
+            CHAT_ID,
+            "#1 Mouse: 25,50 · 3 en stock\n"
+            "#2 Teclado: 100,00 · agotado\n"
+            "#3 Monitor: 199,99 · 12 en stock",
+        )
+    ]
+    assert assistant.calls == []
+
+
+@pytest.mark.parametrize("command", ["/productos@CatalogBot", "/PRODUCTOS", "/productos ya"])
+def test_productos_accepts_the_bot_suffix_case_and_a_payload(
+    client, sender, assistant, command
+):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 1})
+
+    post_update(client, text_update(command))
+
+    assert sender.sent == [(CHAT_ID, "#1 Mouse: 10,00 · 1 en stock")]
+
+
+def test_productos_is_open_to_non_admins(client, sender, assistant, use_admins):
+    use_admins(1)
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 1})
+
+    post_update(client, text_update("/productos", sender_id=2))
+
+    assert sender.sent == [(CHAT_ID, "#1 Mouse: 10,00 · 1 en stock")]
+
+
+def test_productos_with_an_empty_catalog_sends_a_friendly_message(client, sender, assistant):
+    post_update(client, text_update("/productos"))
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.NO_PRODUCTS_TEXT)]
+    assert "no hay productos" in telegram_bot.NO_PRODUCTS_TEXT.lower()
+
+
+def test_productos_truncates_a_long_list_under_the_telegram_limit(
+    client, sender, assistant, db_session
+):
+    total = 40
+    for index in range(total):
+        add_product(db_session, f"Producto {index:02d} " + "x" * 180, 9.99, 5)
+
+    post_update(client, text_update("/productos"))
+
+    [(chat_id, text)] = sender.sent
+    lines = text.split("\n")
+    shown = [line for line in lines if line.startswith("#")]
+    assert chat_id == CHAT_ID
+    assert len(text) <= MAX_MESSAGE_LENGTH
+    assert 0 < len(shown) < total
+    assert shown[0].startswith("#1 Producto 00")
+    assert lines[-1] == f"… y {total - len(shown)} más. Pregunta por uno concreto."
+    assert len(lines) == len(shown) + 1
+
+
+def test_productos_does_not_truncate_a_list_that_fits(client, sender, assistant, db_session):
+    for index in range(10):
+        add_product(db_session, f"Producto {index}", 1, 1)
+
+    post_update(client, text_update("/productos"))
+
+    text = sender.sent[0][1]
+    assert text.count("\n") == 9
+    assert "más" not in text
+
+
+def test_productos_database_failure_sends_the_unavailable_text(client, sender, assistant):
+    session = FailingSession()
+    previous_get_db = app.dependency_overrides[get_db]
+    app.dependency_overrides[get_db] = lambda: session
+    try:
+        response = post_update(client, text_update("/productos"))
+    finally:
+        app.dependency_overrides[get_db] = previous_get_db
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.UNAVAILABLE_TEXT)]
+    assert session.rolled_back
+
+
+def test_productos_failure_logs_the_chat_id_without_error_details(
+    client, sender, assistant, caplog
+):
+    session = FailingSession()
+    previous_get_db = app.dependency_overrides[get_db]
+    app.dependency_overrides[get_db] = lambda: session
+    try:
+        with caplog.at_level(logging.WARNING):
+            post_update(client, text_update("/productos"))
+    finally:
+        app.dependency_overrides[get_db] = previous_get_db
+
+    assert str(CHAT_ID) in caplog.text
+    assert "OperationalError" in caplog.text
+    assert "server closed the connection" not in caplog.text
+
+
+def test_productos_releases_the_db_connection(client, sender, assistant, request_sessions):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 3})
+    request_sessions.clear()
+
+    post_update(client, text_update("/productos"))
+
+    assert [session.in_transaction() for session in request_sessions] == [False]
+
+
+# --- Other commands ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/settings",
+        "/agregar Mouse; 10; 5",
+        "/editar 1 precio=12",
+        "/agregar@CatalogBot Mouse; 10; 5",
+        "/AGREGAR",
+        "/",
+    ],
+)
+def test_other_commands_get_the_not_available_reply(
+    client, sender, assistant, use_admins, command
+):
+    use_admins(CHAT_ID)
+
+    response = post_update(client, text_update(command))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.UNKNOWN_COMMAND_TEXT)]
+    assert assistant.calls == []
+    assert "/ayuda" in telegram_bot.UNKNOWN_COMMAND_TEXT
+
+
+def test_unimplemented_admin_commands_do_not_write_to_the_database(
+    client, sender, assistant, use_admins
+):
+    use_admins(CHAT_ID)
+
+    post_update(client, text_update("/agregar Mouse; 10; 5"))
+
+    assert client.get(PRODUCTS_URL).json() == []
+
+
+@pytest.mark.parametrize("command", ["/id", "/productos", "/ayuda", "/agregar x"])
+def test_duplicate_deliveries_of_commands_yield_one_reply(client, sender, assistant, command):
+    first = post_update(client, text_update(command, update_id=88))
+    second = post_update(client, text_update(command, update_id=88))
+
+    assert first.status_code == second.status_code == 200
+    assert len(sender.sent) == 1
 
 
 # --- Catalog questions -------------------------------------------------------
