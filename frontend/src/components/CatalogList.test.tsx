@@ -46,9 +46,9 @@ describe('CatalogList', () => {
     expect(screen.getByText('2 productos, 1 en stock.', { exact: false })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'En stock' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Agotados' })).toBeInTheDocument()
-    expect(screen.getByText('25,50')).toBeInTheDocument()
+    expect(screen.getByText(/^Bs\s25,50$/)).toBeInTheDocument()
     expect(screen.getByText('12 disponibles')).toBeInTheDocument()
-    expect(screen.getByText('89,99')).toBeInTheDocument()
+    expect(screen.getByText(/^Bs\s89,99$/)).toBeInTheDocument()
   })
 
   it('treats a negative stock as sold out so no row goes missing', () => {

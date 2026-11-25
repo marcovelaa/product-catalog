@@ -79,14 +79,14 @@ def test_creating_a_product_sends_exactly_one_alert(client, notifier):
     assert response.status_code == 201
     product_id = response.json()["id"]
     assert notifier.sent == [
-        f"New product: Mechanical Keyboard (id {product_id}) - price 49.50, stock 12"
+        f"New product: Mechanical Keyboard (id {product_id}) - price Bs 49.50, stock 12"
     ]
 
 
 def test_price_is_formatted_with_two_decimals(client, notifier):
     create(client, price=10)
 
-    assert "price 10.00," in notifier.sent[0]
+    assert "price Bs 10.00," in notifier.sent[0]
 
 
 @pytest.mark.parametrize(
@@ -202,7 +202,7 @@ def test_product_name_is_neutralized_for_slack_mrkdwn(client, notifier, name, ex
 
     assert response.status_code == 201
     assert notifier.sent == [
-        f"New product: {expected_name} (id {response.json()['id']}) - price 49.50, stock 12"
+        f"New product: {expected_name} (id {response.json()['id']}) - price Bs 49.50, stock 12"
     ]
     assert "<" not in notifier.sent[0]
     assert ">" not in notifier.sent[0]

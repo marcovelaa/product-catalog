@@ -52,16 +52,16 @@ The backend (`products-backend`, T1–T5) works locally against the user's Supab
   - [x] User side: bot created in BotFather, both env vars loaded in Render, PR merged, setWebhook run. All done.
   - Known follow-up: no `update_id` de-duplication. A cold start longer than Telegram's delivery timeout could produce duplicate replies; consider a small in-memory recent-update_id set.
   - Earlier assess: the first run said `unassessable` (untracked .atl). After ignoring it: medium, `slice_budget_reached` (827 lines).
-- [ ] T4 — Slack Option B: product-created webhook (non-blocking, timeout, failure-safe) + tests; Option A guidance (Vercel/GitHub app). Needs a Slack webhook URL.
+- [x] T4 — DONE 2026-11-25 (PR #4; live alert verified by the user). Slack Option B: product-created webhook (non-blocking, timeout, failure-safe) + tests; Option A guidance (Vercel/GitHub app). Needs a Slack webhook URL.
   - [x] Code (2026-11-25) on `feat/slack-alerts`, commit `b576cea` (delegated writer). New `backend/slack_alerts.py` (`SlackNotifier` port, httpx adapter, 3 s timeout, single attempt, URL redacted from messages/repr/logs, `send_safely` swallows every failure), hook in `POST /api/v1/products` via `BackgroundTasks` (201 path only), name escaped (`&`, `<`, `>`) so `<!channel>` or `<@U>` cannot mention, capped at 100 chars. Writer found a real bug: background tasks run before the session teardown, so the route now calls `db.close()` before returning to free the pooled connection (product stays serializable). RED: `ModuleNotFoundError: slack_alerts`; GREEN 132 passed (95 baseline). Parent spot check: 132 passed.
   - [x] Native review: user granted consent; lineage `review-5032b42d3e57c46e`, medium, 478 lines, 1 lens → APPROVED with no findings, acknowledged, burned. Boundary advances to `b576cea`.
   - [x] User side: Slack workspace "Catalogo de Productos", app "Catalogo Alertas", Incoming Webhook created. The user is adding `SLACK_WEBHOOK_URL` in Render (Claude never sees the value).
   - [x] PR #4 merged to main as `c0856ad` (user asked to merge, 2026-11-25). `SLACK_WEBHOOK_URL` is set in Render by the user.
   - [ ] Pending: live check (create a product from the web page, see the message in the Slack channel). Rubric #5 is verified only after that.
   - [ ] Option A (deploy alerts via the Vercel/GitHub Slack app) is guidance only; do it after Vercel exists (T7).
-- [ ] T5 — Devin prompt (non-generic) for the user to run; capture the log for the report.
+- [~] T5 — SKIPPED by the user (2026-11-25: "no usaremos devin"). Rubric #4 unmet, knowingly.
   - Decision (user, 2026-11-24): Devin does a **bug fix**, not the boilerplate. Claude builds the frontend independently (T6); after it exists, Claude writes a prompt for a small real bug for the user to hand to Devin.
-- [ ] T6 — Frontend (React + Vite + Tailwind) built by Claude (not on Devin output): catalog grid, form, Q&A panel, cold-start state. Aesthetic direction to be decided with the user.
+- [x] T6 — DONE (PRs #2, #3, #5). Frontend (React + Vite + Tailwind) built by Claude (not on Devin output): catalog grid, form, Q&A panel, cold-start state. Aesthetic direction to be decided with the user.
   - Decision (user, 2026-11-24): **no 3D element at all.** The user was told explicitly that this leaves rubric #7 unmet and chose it anyway. R3F is dropped from the stack.
   - Aesthetic (user, 2026-11-24): design-taste-frontend direction **The split stage** (seed 1061525746, sheet in `.taste-skill/`). Work Sans 300/400/500; palette "Sand and moss" (bg #ddd6c6, surface #d2cab8, ink #2a2a26, muted #59574e, accent #4f6238, field #3f5a2a); stripe band as the only ornament. Adaptation chosen by the user: the sticky half is the **Q&A chat** (not a photo); the scrolling half holds the catalog list and the add-product form. On a phone, the chat goes in a tab or at the end.
   - T6a STATUS (2026-11-24): code committed `a962a7e` on `feat/web-frontend-chat`. The writer agent was stopped by the user before reporting; parent verified: `npx vitest run` → 29 passed (5 files), `npm run build` OK, taste `lint.mjs` → 0 FAIL 0 WARN. `inspect.mjs`: 4 FAIL, 1 WARN, all defended: few-pictures and no-footage (the fixed half is the chat, user's choice), focal-point (64px headline, accepted for now), covered-text @768 (fixed tab bar over the footer while scrolling; content has bottom padding), off-centre @768 (measured in the API-error state, short error text). No RED evidence recorded for the writer's tests (it was stopped); noted honestly. Assess: medium, `slice_budget_reached` (5008 lines, lockfile included). Native review: user granted consent; lineage `review-8f1c43b66248ad39`, 1 lens `review-reliability` → APPROVED with no findings, acknowledged, authority `burned`. Reviewed boundary advances to `a962a7e`. Follow-up (reviewer observation, not a finding): `CatalogList` groups by `stock > 0` / `stock === 0`, so a row with negative stock (possible from Supabase dashboard inserts, which skip API validation) would count in the total but show in neither group; fix in T6b by grouping `stock <= 0` as out of stock.
@@ -70,7 +70,7 @@ The backend (`products-backend`, T1–T5) works locally against the user's Supab
   - Slices (stacked-to-main, on top of `feat/telegram-bot`): T6a `feat/web-frontend-chat`: Vite + React + Tailwind scaffold, tokens, API client with the cold-start state, split layout, chat panel (`/api/v1/catalog/ask`). T6b `feat/web-frontend-catalog`: catalog list (GET) + add-product form (POST) with refresh.
 - [x] T7 — Vercel deploy (2026-11-25): https://product-catalog-dun.vercel.app , Hobby plan, imported as a single project with Root Directory `frontend` (Vercel detected two apps; "Services" would also have deployed the backend, so it was avoided), `VITE_API_URL` set before the first deploy. Render `ALLOWED_ORIGINS` set to that origin by the user. Parent verified with curl: GET and the `/catalog/ask` preflight return the matching `access-control-allow-origin`; a foreign origin gets none. Rubric #3 deployed; the user still has to confirm the chat works in the browser. Rubric #7 (3D) intentionally not done (user decision).
 - [x] T6c — Redesign (2026-11-25, user asked: English UI and "ugly" colors). Branch `feat/frontend-redesign`, commit `2b54d88` (delegated writer) plus a parent follow-up. Spanish UI (neutral "tú", es-locale numbers), new palette (bg #f5f7fa, ink #121c2b, accent #1d5fbf, navy chat panel #12263f), stripe ornament removed, headline enlarged (inspect: 1 FAIL few-pictures and 2 WARN accepted). Deliberate redraw of the dealt palette, reason: user rejection. Native review: granted, lineage `review-8a8e219eb05054de`, APPROVED, acknowledged, burned. Finding (WARNING, valid): a single-separator "1.000"/"1,000" would silently save as 1. Fixed test-first (RED then GREEN): the price accepts one decimal comma or dot, at most 2 decimals, and rejects 3+ decimals with an explicit message. 63 tests pass. That fix is not reviewed separately. Pending: user OK to push, PR and merge.
-- [ ] T8 — Comentera embed/setup + gather 2+ comments (rubric #6); final report checklist mapping each rubric item to evidence.
+- [~] T8 — Comentera SKIPPED by the user (2026-11-25: "lo de comentera lo dejamos, no se hace"). Rubric #6 unmet, knowingly. The final report / video source document is still open (see Next step).
 
 ## Checks
 - Backend: `backend/venv/Scripts/python.exe -m pytest -q` (59 passing baseline).
@@ -80,10 +80,42 @@ The backend (`products-backend`, T1–T5) works locally against the user's Supab
 - Forecast is ~1,200+ authored lines (frontend dominates), over the ~400 budget. Strategy `ask-on-risk`; chain strategy chosen by the user (2026-11-24): **stacked-to-main**. Stack: PR1 `feat/telegram-bot` → main; PR2 `feat/web-frontend-chat` (based on PR1); PR3 `feat/web-frontend-catalog` (based on PR2).
 - RDD becomes applicable once the git repo exists.
 
-## Progress / Evidence
-- (none yet)
+## Progress / Evidence (snapshot 2026-11-25, session paused by the user)
 
-## Next step (session paused 2026-11-24 by the user)
-1. ~~Finish the in-flight native review of T3~~ Done 2026-11-24 (approved, burned).
-2. NEW PRIORITY (user, 2026-11-24): build the web chat screen the guide asks for BEFORE finishing Telegram: a page where users ask catalog questions ("consultas") plus the catalog grid/form/3D. That is T6, pulled ahead of T3's remaining user-side steps. Start with a non-generic aesthetic decision (design-taste-frontend skill) and the Devin decision (T5: the rubric needs a Devin log, so the user runs Devin with a prompt Claude writes, or uses Devin for a bug fix).
-3. Then resume T3 user-side steps (BotFather, Render env vars, merge, setWebhook).
+### Rubric status
+| # | Item | Status |
+|---|------|--------|
+| 1 | Supabase `products` with real rows | Done (24 rows: 4 original + 20 added by Claude directly in SQL on 2026-11-25, so Slack was not flooded) |
+| 2 | Render API GET 200 / POST 201 | Done |
+| 3 | Vercel frontend online | Done: https://product-catalog-dun.vercel.app (Spanish UI, professional palette, user: "mucho mejor") |
+| 4 | Devin log | Skipped by the user |
+| 5 | Slack alerts | Done and verified live |
+| 6 | Comentera, 2 comments | Skipped by the user |
+| 7 | 3D element | Skipped by the user |
+Extra: Telegram bot (live), CI on GitHub Actions, conversation memory.
+
+### Live system (public URLs only; never store tokens or webhook URLs here)
+- Repo: https://github.com/marcovelaa/product-catalog (public, only `main` exists, 11 PRs merged with merge commits)
+- API: https://product-catalog-8ej9.onrender.com (Render free; sleeps after 15 min idle)
+- Web: https://product-catalog-dun.vercel.app (Vercel Hobby, Root Directory `frontend`, `VITE_API_URL`)
+- Supabase project `product-catalog`: tables `products` (RLS on, 1 public read policy) and `telegram_messages` (RLS on, 0 policies, created 2026-11-25 via migration `create_telegram_messages`)
+- Render env var NAMES in use: DATABASE_URL (pooler), ALLOWED_ORIGINS, GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_ADMIN_IDS, SLACK_WEBHOOK_URL
+- Tests: backend 464 passed, frontend 64 passed; CI runs both on every PR and on main (public repo + standard runners = free)
+
+### PRs (all merged)
+#1 Telegram bot, #2 web chat + catalog, #3 add-product form, #4 Slack alert, #5 Spanish UI + palette, #6 stock cap (API 500 fixed with a 422), #7 Spanish bot texts + duplicate-delivery guard, #8 CI, #9 admin allow-list + /id + /productos, #10 /agregar + /editar, #11 conversation memory + Spanish-only answers.
+
+### Bot capabilities now
+Q&A over the live catalog (Gemini, Spanish only), memory of the last 10 messages per chat, `/olvidar`, `/id`, `/productos`, admin-only `/agregar` and `/editar` (allow-list of SENDER ids, fail closed; no public write route exists), Slack alert on `/agregar`. Details: `odd/tasks/telegram-admin-commands.md`.
+
+### Decisions by the user (2026-11-25)
+No 3D, no Devin, no Comentera; commands (not natural language) for writes; everything on free tiers; AI use for the video is authorized by the course; the video must be about how to integrate an agent bot into a system; any amount of time over one minute is fine; currency should be bolivianos (Bs).
+
+### Honest notes for the report/video
+The bot is a conversational assistant with deterministic commands, not an autonomous agent (writes are never decided by the LLM). Duplicate guard is in memory (lost on restart). The web chat has no memory. Unreviewed small follow-ups were accepted by the user to avoid review loops. Supabase advisor: `public.rls_auto_enable()` is a pre-existing SECURITY DEFINER function callable by anon via RPC (likely platform-managed with the `ensure_rls` event trigger); NOT touched, user may ask Claude to investigate.
+
+## Next step (paused 2026-11-25)
+1. Live check of memory, Spanish-only answers and `/olvidar` in Telegram (user was asked to test; result not yet reported).
+2. Currency in bolivianos (Bs): waiting for the user to say whether to only relabel or also convert values (and which exchange rate; Claude must not assert a rate). Touches web list and form hint, bot formatting, assistant instruction. `Intl.NumberFormat("es-BO",{style:"currency",currency:"BOB"})` gives `Bs 25,50`.
+3. Video support material for NotebookLM, in a folder OUTSIDE the repo (e.g. `E:\USUARIOS\Desktop\video-proyecto`): a Markdown source document centered on integrating an agent bot into a system (system + agent + two channels, webhook, ack-then-background, grounding with live data, authorization, memory, duplicates, failure isolation, tests/CI, free tiers, what was skipped), an architecture diagram, and FRESH screenshots (old ones in `video-proyecto/capturas` show deleted test products and the old hint). Plan: hybrid video (NotebookLM explains, user adds real screen clips of web, bot and Slack in a free editor); NotebookLM Video Overview accepts a steering prompt, a visual style and a language, and is not confirmed to reuse uploaded screenshots.
+4. Optional: investigate `rls_auto_enable()`; Slack Option A (deploy alerts via Vercel/GitHub app); photos (T5 of the admin feature, Supabase Storage).

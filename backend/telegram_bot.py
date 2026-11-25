@@ -58,7 +58,7 @@ WELCOME_TEXT = (
     "- ¿Tienen teclados por menos de 100?\n"
     "- ¿Qué productos están agotados?\n\n"
     "Comandos:\n"
-    "/productos - lista los productos con su id, precio y existencias\n"
+    "/productos - lista los productos con su id, precio (Bs) y existencias\n"
     "/id - muestra tu ID de usuario de Telegram\n"
     "/olvidar - borra lo que recuerdo de esta conversación\n\n"
     "Envía preguntas de 1 a 500 caracteres. Recuerdo tus últimos mensajes para "
@@ -85,7 +85,7 @@ ADMIN_HELP_SECTION = (
     f"  Ejemplo: {EDIT_EXAMPLE}\n"
     f"Los campos de /editar son: {EDIT_FIELDS_TEXT}. Con imagen=- quitas la imagen.\n"
     "Separa los valores con punto y coma (;), así el precio puede llevar coma "
-    "decimal, por ejemplo 25,50."
+    "decimal, por ejemplo 25,50. El precio va en bolivianos (Bs)."
 )
 ADMIN_ONLY_TEXT = "Solo el administrador puede usar este comando."
 UNKNOWN_COMMAND_TEXT = (
@@ -506,8 +506,8 @@ def interpret_text(
 
 
 def format_price(price: float) -> str:
-    """Two decimals and a decimal comma, like the Spanish UI: 25,50."""
-    return f"{price:.2f}".replace(".", ",")
+    """Bolivianos, two decimals and a decimal comma, like the Spanish UI: Bs 25,50."""
+    return "Bs " + f"{price:.2f}".replace(".", ",")
 
 
 def format_stock(stock: int) -> str:

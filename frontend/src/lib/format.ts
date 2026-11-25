@@ -1,5 +1,5 @@
-// The API stores prices as plain numbers with no currency, so none is shown.
-const priceFormat = new Intl.NumberFormat('es', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// The API stores prices as plain numbers; they are shown as bolivianos (Bs), with no conversion.
+const priceFormat = new Intl.NumberFormat('es-BO', { style: 'currency', currency: 'BOB' })
 const countFormat = new Intl.NumberFormat('es')
 
 export function formatPrice(price: number): string {
