@@ -50,4 +50,19 @@ describe('CatalogList', () => {
     expect(screen.getByText('12 left')).toBeInTheDocument()
     expect(screen.getByText('$89.99')).toBeInTheDocument()
   })
+
+  it('treats a negative stock as sold out so no row goes missing', () => {
+    render(
+      <CatalogList
+        {...base}
+        status="loaded"
+        products={[product(1, 'Wireless Mouse', 25.5, 3), product(2, 'Broken Import', 10, -2)]}
+      />,
+    )
+
+    expect(screen.getByText('2 products, 1 in stock.', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText('Broken Import')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Sold out' })).toBeInTheDocument()
+    expect(screen.getByText('None left')).toBeInTheDocument()
+  })
 })

@@ -332,6 +332,100 @@ body {
   text-align: right;
 }
 
+/* ---- Add product: a real form, so its fields carry borders ---- */
+
+.add {
+  width: min(520px, 100% - 96px);
+  margin: 0 auto;
+  padding-bottom: 160px;
+  flex: none;
+}
+
+.add__form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.add__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.field {
+  min-width: 0;
+}
+
+.field__label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.field__input {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 2px solid var(--muted);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  transition: border-color var(--t-hover) ease;
+}
+
+.field__input[aria-invalid='true'] {
+  border-color: var(--ink);
+}
+
+.field__input:focus-visible {
+  outline-offset: 2px;
+}
+
+.field__hint,
+.field__error {
+  margin: 6px 0 0;
+  font-size: var(--step-small);
+}
+
+.field__hint {
+  color: var(--muted);
+}
+
+.field__error {
+  font-weight: 500;
+}
+
+.form-error {
+  padding: 16px 20px;
+  background: var(--surface);
+}
+
+.form-error p {
+  margin: 0;
+  font-weight: 500;
+}
+
+.form-error .btn {
+  margin-top: 16px;
+}
+
+.add__actions {
+  margin-top: 8px;
+}
+
+.add__status:not(:empty) {
+  margin-top: -8px;
+}
+
+.form-note {
+  margin: 0;
+}
+
 /* ---- Footer: the name returns ---- */
 
 .footer__name {
@@ -590,6 +684,12 @@ body {
     min-height: 44px;
   }
 
+  .add {
+    width: auto;
+    margin: 0 20px;
+    padding-bottom: 96px;
+  }
+
   .footer__name,
   .footer__note {
     padding-inline: 20px;
@@ -665,7 +765,8 @@ body {
     animation-delay: calc(var(--i) * 70ms);
   }
 
-  .message {
+  .message,
+  .form-note {
     animation: rise-small 240ms var(--ease-out) both;
   }
 
