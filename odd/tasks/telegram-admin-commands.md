@@ -28,7 +28,7 @@ The bot is read-only and public (it only answers catalog questions). The owner w
 - Keep the webhook acknowledging quickly; the duplicate-delivery guard stays.
 
 ## Tasks
-- [ ] T1 — Admin foundation + read-only commands: parse `from.id`, `TELEGRAM_ADMIN_IDS` config (fail closed), `/id`, `/productos`, updated `/start` and `/ayuda` text (admin commands listed only for admins). Route: delegated writer.
+- [x] T1 — DONE 2026-11-25 (commits 52f69f7 + parse_command fix). Admin foundation + read-only commands: parse `from.id`, `TELEGRAM_ADMIN_IDS` config (fail closed), `/id`, `/productos`, updated `/start` and `/ayuda` text (admin commands listed only for admins). Route: delegated writer.
 - [ ] T2 — `/agregar` (+ Slack alert) and `/editar` through a shared product service (no public route), strict validation, clear Spanish errors, tests. Route: delegated writer.
 - [ ] T3 — User steps: deploy, send `/id`, set `TELEGRAM_ADMIN_IDS` in Render, live check of `/agregar` and `/editar`.
 - [ ] T4 (later, needs explicit user OK for DDL) — Conversation memory: table `telegram_messages` with RLS on and no public policy, keep only the last N messages per chat, purge old ones.
@@ -42,7 +42,7 @@ The bot is read-only and public (it only answers catalog questions). The owner w
 - Strategy `ask-on-risk`, chain `stacked-to-main` (chosen earlier by the user). One PR per work unit; native review per commit when `review_due`.
 
 ## Progress / Evidence
-- (none yet)
+- T1 (2026-11-25): delegated writer. RED: `ImportError: cannot import name get_telegram_admin_ids`; GREEN 196 passed (baseline 147); parent spot check 196 passed, then 205 after the follow-up. Security reviewed by the parent: `parse_admin_ids` keeps only ASCII positive integers, fail closed when empty, `is_admin` uses the SENDER id (`message.from.id`), never the chat id. Native review: medium, 619 lines, lineage `review-1a67a470461f8e01`, approved, acknowledged, burned. One finding (valid): `parse_command` split only on a literal space, so `/agregar` followed by a newline was not recognized; fixed test-first (RED 3 failed, then GREEN 205 passed). That follow-up is a few lines and was not reviewed separately.
 
 ## Next step
-T1.
+T2 (`/agregar` + `/editar`) on a branch stacked on this one. T2 must add a clear refusal for non-admins (today both commands answer "unknown").

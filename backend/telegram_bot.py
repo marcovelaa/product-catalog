@@ -255,7 +255,10 @@ def parse_command(text: str) -> tuple[str, str] | None:
     """
     if not text.startswith("/"):
         return None
-    head, _, payload = text.partition(" ")
+    # Split on any whitespace: on a phone the payload often starts on a new line.
+    parts = text.split(maxsplit=1)
+    head = parts[0]
+    payload = parts[1] if len(parts) > 1 else ""
     name = head[1:].partition("@")[0].lower()
     return name, payload.strip()
 

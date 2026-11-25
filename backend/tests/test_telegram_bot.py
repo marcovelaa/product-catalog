@@ -257,6 +257,27 @@ def test_welcome_text_is_neutral_spanish_with_the_question_limits():
     assert "Hi!" not in text
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/agregar Mouse; 25,50; 12", ("agregar", "Mouse; 25,50; 12")),
+        ("/agregar\nMouse; 25,50; 12", ("agregar", "Mouse; 25,50; 12")),
+        ("/agregar\tMouse; 25,50; 12", ("agregar", "Mouse; 25,50; 12")),
+        ("/agregar \n  Mouse", ("agregar", "Mouse")),
+        ("/editar@MiBot 3 precio=30", ("editar", "3 precio=30")),
+        ("/ID", ("id", "")),
+        ("/id\n", ("id", "")),
+        ("/", ("", "")),
+    ],
+)
+def test_parse_command_splits_on_any_whitespace(text, expected):
+    assert telegram_bot.parse_command(text) == expected
+
+
+def test_parse_command_ignores_plain_text():
+    assert telegram_bot.parse_command("¿Cuánto cuesta el mouse?") is None
+
+
 def test_welcome_text_lists_the_public_commands_but_no_admin_commands():
     text = telegram_bot.WELCOME_TEXT
 
