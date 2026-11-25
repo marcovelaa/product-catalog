@@ -1,0 +1,63 @@
+name: CI
+
+# Free tier note: this repository is public, so standard GitHub-hosted runners
+# (ubuntu-latest) are free and unmetered. Do not switch to "larger runners":
+# those are billed even on public repositories.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Pull request runs share one group per PR, so a newer push cancels the older run.
+# Every other event (pushes to main) gets its own group per commit, so a burst of
+# pushes never cancels or replaces a pending run and each commit ends with a result.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/.python-version
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      # The tests use an in-memory SQLite database and blank every secret, so
+      # no repository secrets are needed or exposed here.
+      - name: Run tests
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+      - name: Type-check and build
+        run: npm run build
