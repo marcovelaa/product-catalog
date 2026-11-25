@@ -29,7 +29,7 @@ The bot is read-only and public (it only answers catalog questions). The owner w
 
 ## Tasks
 - [x] T1 — DONE 2026-11-25 (commits 52f69f7 + parse_command fix). Admin foundation + read-only commands: parse `from.id`, `TELEGRAM_ADMIN_IDS` config (fail closed), `/id`, `/productos`, updated `/start` and `/ayuda` text (admin commands listed only for admins). Route: delegated writer.
-- [ ] T2 — `/agregar` (+ Slack alert) and `/editar` through a shared product service (no public route), strict validation, clear Spanish errors, tests. Route: delegated writer.
+- [x] T2 — DONE 2026-11-25 (commit b77f599). `/agregar` (+ Slack alert) and `/editar` through a shared product service (no public route), strict validation, clear Spanish errors, tests. Route: delegated writer.
 - [ ] T3 — User steps: deploy, send `/id`, set `TELEGRAM_ADMIN_IDS` in Render, live check of `/agregar` and `/editar`.
 - [ ] T4 (later, needs explicit user OK for DDL) — Conversation memory: table `telegram_messages` with RLS on and no public policy, keep only the last N messages per chat, purge old ones.
 - [ ] T5 (later) — Product photos: Telegram photo to Supabase Storage (public bucket, new credential in Render), save `image_url`, bot can show it, web shows images.
@@ -44,5 +44,7 @@ The bot is read-only and public (it only answers catalog questions). The owner w
 ## Progress / Evidence
 - T1 (2026-11-25): delegated writer. RED: `ImportError: cannot import name get_telegram_admin_ids`; GREEN 196 passed (baseline 147); parent spot check 196 passed, then 205 after the follow-up. Security reviewed by the parent: `parse_admin_ids` keeps only ASCII positive integers, fail closed when empty, `is_admin` uses the SENDER id (`message.from.id`), never the chat id. Native review: medium, 619 lines, lineage `review-1a67a470461f8e01`, approved, acknowledged, burned. One finding (valid): `parse_command` split only on a literal space, so `/agregar` followed by a newline was not recognized; fixed test-first (RED 3 failed, then GREEN 205 passed). That follow-up is a few lines and was not reviewed separately.
 
+- T2 (2026-11-25): delegated writer, branch `feat/telegram-add-edit-products` stacked on T1. RED: `ModuleNotFoundError: product_service` (the Telegram tests were not observed RED on their own: the writer reported it honestly); GREEN 393 passed (baseline 205); parent spot check 393 passed. Parent read: the admin check runs BEFORE the payload is parsed, the DB write is inline before the ack, Slack and reply texts are built from a snapshot so background tasks hold no session, `finally: db.rollback()`. The public `POST /api/v1/products` now calls `product_service.create_product` with identical behavior (all its tests pass unchanged); no PATCH/PUT/DELETE route exists (a test asserts it). Native review: medium, 1280 lines, lineage `review-a9c6472d1751b652`, APPROVED with no findings, acknowledged, burned.
+
 ## Next step
-T2 (`/agregar` + `/editar`) on a branch stacked on this one. T2 must add a clear refusal for non-admins (today both commands answer "unknown").
+Push both branches as stacked PRs (needs user OK), merge, then T3 user steps: `/id`, set `TELEGRAM_ADMIN_IDS` in Render, live check.
