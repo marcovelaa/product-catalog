@@ -1,6 +1,6 @@
 # Feature: currency-and-video-material
 
-Locator: `odd/tasks/currency-and-video-material.md` · Engram mirror: `odd/currency-and-video-material/tasks` (PENDING: Engram refused writes with `project_transition_conflict`; waiting for the user to choose the project key)
+Locator: `odd/tasks/currency-and-video-material.md` · Engram mirror: `odd/currency-and-video-material/tasks` (saved 2026-11-25 under project `agentes-infraestructura`, observation 540; the user delegated the project choice)
 
 ## Objective
 1. Show prices as bolivianos (Bs) everywhere users read them, by relabeling only (no conversion, no exchange rate).
