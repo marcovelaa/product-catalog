@@ -11,12 +11,15 @@ a background task after the HTTP response.
 
 import hmac
 import logging
+import math
 import os
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -32,6 +35,7 @@ from catalog_assistant import (
     CatalogProduct,
     get_catalog_assistant,
 )
+from product_service import ProductChanges
 
 logger = logging.getLogger(__name__)
 # httpx logs every request URL at INFO, and a Bot API URL contains the token.
@@ -59,14 +63,27 @@ WELCOME_TEXT = (
     "actual del catálogo. Si el servidor lleva un rato sin uso se suspende, así "
     "que la primera respuesta puede tardar cerca de un minuto."
 )
+ADD_SYNTAX = "/agregar Nombre; precio; stock; url opcional"
+ADD_EXAMPLE = "/agregar Mouse inalámbrico; 25,50; 12"
+EDIT_SYNTAX = "/editar <id> campo=valor; campo=valor"
+EDIT_EXAMPLE = "/editar 3 precio=19,90; stock=8"
+EDIT_FIELDS_TEXT = "nombre, precio, stock, imagen"
+ADD_USAGE = f"Uso: {ADD_SYNTAX}\nEjemplo: {ADD_EXAMPLE}"
+EDIT_USAGE = (
+    f"Uso: {EDIT_SYNTAX}\nEjemplo: {EDIT_EXAMPLE}\n"
+    f"Campos: {EDIT_FIELDS_TEXT} (imagen=- quita la imagen)."
+)
 ADMIN_HELP_SECTION = (
     "Comandos de administrador:\n"
-    "/agregar Nombre; precio; stock; url opcional\n"
-    "/editar <id> campo=valor; campo=valor\n"
-    "Los campos de /editar son: nombre, precio, stock, imagen. "
+    f"{ADD_SYNTAX}\n"
+    f"  Ejemplo: {ADD_EXAMPLE}\n"
+    f"{EDIT_SYNTAX}\n"
+    f"  Ejemplo: {EDIT_EXAMPLE}\n"
+    f"Los campos de /editar son: {EDIT_FIELDS_TEXT}. Con imagen=- quitas la imagen.\n"
     "Separa los valores con punto y coma (;), así el precio puede llevar coma "
     "decimal, por ejemplo 25,50."
 )
+ADMIN_ONLY_TEXT = "Solo el administrador puede usar este comando."
 UNKNOWN_COMMAND_TEXT = (
     "Ese comando no existe o aún no está disponible. "
     "Envía /ayuda para ver los comandos disponibles."
@@ -248,6 +265,178 @@ class ListProducts:
     """The sender asked for the product list (needs a database read)."""
 
 
+@dataclass(frozen=True, slots=True)
+class AddProduct:
+    """An admin asked to create a product; the data is already validated."""
+
+    data: schemas.ProductCreate
+
+
+@dataclass(frozen=True, slots=True)
+class EditProduct:
+    """An admin asked to change a product; the changes are already validated."""
+
+    product_id: int
+    changes: ProductChanges
+
+
+class InputError(ValueError):
+    """Invalid admin command input; the message is the Spanish reply for the user."""
+
+
+# --- Admin write commands: field parsing -------------------------------------------
+
+ADMIN_COMMANDS = frozenset({"agregar", "editar"})
+EDIT_FIELDS = frozenset({"nombre", "precio", "stock", "imagen"})
+MAX_STOCK = 2_147_483_647  # Largest Postgres `integer`, like schemas.ProductBase.
+MAX_STOCK_DIGITS = len(str(MAX_STOCK))
+MAX_PRODUCT_ID_DIGITS = 18  # Product ids are bigint; a longer one can never exist.
+MAX_NAME_LENGTH = 200
+MAX_IMAGE_URL_LENGTH = 2048
+# ASCII digits only: `\d` would also match the digits of other scripts.
+_PRICE_PATTERN = re.compile(r"(-?)([0-9]+)(?:[.,]([0-9]{1,2}))?")
+_DIGITS_PATTERN = re.compile(r"[0-9]+")
+
+NAME_ERROR = (
+    f"El nombre debe tener entre 1 y {MAX_NAME_LENGTH} caracteres. "
+    "Ejemplo: Mouse inalámbrico"
+)
+PRICE_ERROR = (
+    "El precio no es válido. Escríbelo como número con hasta 2 decimales, "
+    "por ejemplo 25,50 o 25.50."
+)
+PRICE_NEGATIVE_ERROR = "El precio no puede ser negativo. Ejemplo: 25,50"
+STOCK_ERROR = f"El stock debe ser un número entero entre 0 y {MAX_STOCK}. Ejemplo: 12"
+IMAGE_ERROR = (
+    f"La imagen debe ser una URL http o https de hasta {MAX_IMAGE_URL_LENGTH} "
+    "caracteres. Ejemplo: https://ejemplo.com/foto.jpg"
+)
+PRODUCT_ID_ERROR = (
+    "El id debe ser un número entero positivo, por ejemplo 3. Lo ves con /productos."
+)
+FIELD_FORMAT_ERROR = (
+    "Cada cambio debe ir como campo=valor y separado por punto y coma (;). "
+    f"Ejemplo: {EDIT_EXAMPLE}"
+)
+
+
+def parse_name(raw: str) -> str:
+    """A product name: whitespace runs collapse to one space; 1 to 200 characters."""
+    name = " ".join(raw.split())
+    if not 1 <= len(name) <= MAX_NAME_LENGTH:
+        raise InputError(NAME_ERROR)
+    return name
+
+
+def parse_price(raw: str) -> float:
+    """One decimal comma or dot, at most 2 decimals; no exponents, bases or separators."""
+    match = _PRICE_PATTERN.fullmatch(raw.strip())
+    if match is None:
+        raise InputError(PRICE_ERROR)
+    minus, whole, decimals = match.groups()
+    if minus:
+        raise InputError(PRICE_NEGATIVE_ERROR)
+    price = float(f"{whole}.{decimals or '0'}")
+    if not math.isfinite(price):  # Hundreds of digits overflow a float.
+        raise InputError(PRICE_ERROR)
+    return price
+
+
+def parse_stock(raw: str) -> int:
+    """A whole number from 0 to 2147483647."""
+    raw = raw.strip()
+    if _DIGITS_PATTERN.fullmatch(raw) is None:
+        raise InputError(STOCK_ERROR)
+    digits = raw.lstrip("0") or "0"
+    # Check the length first: int() refuses absurdly long digit strings.
+    if len(digits) > MAX_STOCK_DIGITS or int(digits) > MAX_STOCK:
+        raise InputError(STOCK_ERROR)
+    return int(digits)
+
+
+def parse_image_url(raw: str) -> str:
+    """An http or https URL with a host, without whitespace, up to 2048 characters."""
+    url = raw.strip()
+    if not url or len(url) > MAX_IMAGE_URL_LENGTH:
+        raise InputError(IMAGE_ERROR)
+    if any(char.isspace() or ord(char) < 32 for char in url):
+        raise InputError(IMAGE_ERROR)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # For example an unterminated IPv6 host.
+        raise InputError(IMAGE_ERROR) from None
+    if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        raise InputError(IMAGE_ERROR)
+    return url
+
+
+def parse_add(payload: str) -> schemas.ProductCreate:
+    """Parse "Name; price; stock; url" (stock and url optional) into a new product."""
+    fields = [field.strip() for field in payload.split(";")]
+    if not 2 <= len(fields) <= 4:
+        raise InputError(ADD_USAGE)
+    stock_text = fields[2] if len(fields) > 2 else ""
+    image_text = fields[3] if len(fields) > 3 else ""
+    # The parsers enforce the same limits as the schema, so this cannot fail.
+    return schemas.ProductCreate(
+        name=parse_name(fields[0]),
+        price=parse_price(fields[1]),
+        stock=parse_stock(stock_text) if stock_text else 0,
+        image_url=parse_image_url(image_text) if image_text else None,
+    )
+
+
+def parse_edit(payload: str) -> tuple[int, ProductChanges]:
+    """Parse "<id> field=value; field=value" into a product id and a partial change.
+
+    Each field is split on its first "=" only, so values may contain "=".
+    """
+    head = payload.split(maxsplit=1)
+    if not head:
+        raise InputError(EDIT_USAGE)
+    raw_id, rest = head[0], head[1] if len(head) > 1 else ""
+    if (
+        _DIGITS_PATTERN.fullmatch(raw_id) is None
+        or len(raw_id) > MAX_PRODUCT_ID_DIGITS
+        or int(raw_id) < 1
+    ):
+        raise InputError(PRODUCT_ID_ERROR)
+
+    given: dict[str, str] = {}
+    for part in rest.split(";"):
+        part = part.strip()
+        if not part:
+            continue  # A stray or trailing ";".
+        key, equals, value = part.partition("=")
+        key = key.strip().lower()
+        if not equals or not key:
+            raise InputError(FIELD_FORMAT_ERROR)
+        if key not in EDIT_FIELDS:
+            raise InputError(
+                f"No conozco el campo «{key[:30]}». Los campos son: {EDIT_FIELDS_TEXT}."
+            )
+        if key in given:
+            raise InputError(
+                f"El campo «{key}» aparece dos veces. Usa cada campo una sola vez."
+            )
+        given[key] = value.strip()
+    if not given:
+        raise InputError(EDIT_USAGE)
+
+    values: dict[str, str | int | float | None] = {}
+    for key, raw in given.items():
+        match key:
+            case "nombre":
+                values["name"] = parse_name(raw)
+            case "precio":
+                values["price"] = parse_price(raw)
+            case "stock":
+                values["stock"] = parse_stock(raw)
+            case "imagen":
+                values["image_url"] = None if raw in {"", "-"} else parse_image_url(raw)
+    return int(raw_id), ProductChanges(**values)
+
+
 def parse_command(text: str) -> tuple[str, str] | None:
     """Split "/cmd@Bot payload" into ("cmd", "payload"); None if it is not a command.
 
@@ -272,11 +461,11 @@ def interpret_text(
     text: str,
     sender_id: int | None = None,
     admin_ids: frozenset[int] = frozenset(),
-) -> Reply | ListProducts | schemas.CatalogQuestion:
+) -> Reply | ListProducts | AddProduct | EditProduct | schemas.CatalogQuestion:
     """Map a chat message to a canned reply, a command or a validated catalog question."""
     command = parse_command(text)
     if command is not None:
-        name, _payload = command
+        name, payload = command
         if name in HELP_COMMANDS:
             return Reply(help_text(is_admin(sender_id, admin_ids)))
         if name == "id":
@@ -285,7 +474,18 @@ def interpret_text(
             return Reply(f"Tu ID de usuario de Telegram es {sender_id}.")
         if name == "productos":
             return ListProducts()
-        # Includes /agregar and /editar until they are implemented.
+        if name in ADMIN_COMMANDS:
+            # Checked before the payload is parsed, so a refused sender learns
+            # nothing about the syntax and nothing reaches the database.
+            if not is_admin(sender_id, admin_ids):
+                return Reply(ADMIN_ONLY_TEXT)
+            try:
+                if name == "agregar":
+                    return AddProduct(parse_add(payload))
+                product_id, changes = parse_edit(payload)
+                return EditProduct(product_id, changes)
+            except InputError as error:
+                return Reply(str(error))
         return Reply(UNKNOWN_COMMAND_TEXT)
     try:
         # Same limits as POST /api/v1/catalog/ask.
@@ -303,15 +503,31 @@ def format_stock(stock: int) -> str:
     return f"{stock} en stock" if stock > 0 else "agotado"
 
 
+def format_product_line(product: CatalogProduct) -> str:
+    """`#id Name: price · N en stock`, shared by /productos and the write replies."""
+    return (
+        f"#{product.id} {product.name}: {format_price(product.price)} · "
+        f"{format_stock(product.stock)}"
+    )
+
+
+def product_added_text(product: CatalogProduct) -> str:
+    return f"Producto agregado: {format_product_line(product)}."
+
+
+def product_updated_text(product: CatalogProduct) -> str:
+    return f"Producto actualizado: {format_product_line(product)}."
+
+
+def product_missing_text(product_id: int) -> str:
+    return f"No existe el producto #{product_id}."
+
+
 def format_product_list(products: Sequence[CatalogProduct]) -> str:
     """One `#id Name: price · N en stock` line per product, within Telegram's limit."""
     if not products:
         return NO_PRODUCTS_TEXT
-    lines = [
-        f"#{product.id} {product.name}: {format_price(product.price)} · "
-        f"{format_stock(product.stock)}"
-        for product in products
-    ]
+    lines = [format_product_line(product) for product in products]
     if len("\n".join(lines)) <= MAX_MESSAGE_LENGTH:
         return "\n".join(lines)
     # Reserve room for the footer, sized for the largest possible count.

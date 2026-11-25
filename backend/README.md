@@ -127,7 +127,8 @@ Behavior:
 - `/start`, `/help` and `/ayuda` reply with usage instructions. Admins also see the admin commands; everyone else does not.
 - `/productos` lists the products as `#id Name: price · N en stock` (`agotado` when out of stock), ordered by id, without calling Gemini. A long list is cut to fit Telegram's 4096-character limit and ends with `… y N más.`.
 - `/id` replies with your Telegram user id. Anyone can use it.
-- Any other command (including `/agregar` and `/editar` for now) replies that it is unknown or not available yet.
+- `/agregar` and `/editar` create and change products; they are admin-only (see [Admin commands](#admin-commands-telegram_admin_ids)). Anyone else gets "Solo el administrador puede usar este comando."
+- Any other command replies that it is unknown or not available.
 - Any other text is a catalog question, with the same limits as the API (1-500 characters). Answers are plain text.
 - The webhook acknowledges at once and sends the answer from a background task, so Telegram does not redeliver the update while Gemini is thinking.
 - Duplicate deliveries are ignored: the API remembers the last 1000 `update_id` values and acknowledges a repeated one without replying again. Limitation: this record lives in memory, so it is cleared when the service restarts or sleeps (Render free tier). It covers the common case, a redelivery within the same process lifetime, not every case.
@@ -150,7 +151,48 @@ Rules:
 
 - The list holds **sender** ids (the author of a message), never chat ids. In a group, only the listed users are admins; the group's own id gives nobody any rights.
 - It fails closed: if the variable is empty or missing, nobody is an admin. Spaces and empty items are ignored, and items that are not positive integers are ignored too.
-- Admin commands are documented in `/ayuda` (`/agregar` and `/editar`). Both are implemented in a later change; until then the bot answers that they are not available.
+- A non-admin (and everyone, when the list is empty) is refused before the command is even parsed: nothing is read from or written to the database, and the refusal does not reveal the syntax.
+- The admin commands are also listed in `/ayuda`, for admins only.
+- There is no public REST route to edit or delete products (the REST API has no authentication); the bot's admin check is the only way to change a product.
+
+#### `/agregar`
+
+```
+/agregar Nombre; precio; stock; url opcional
+/agregar Mouse inalámbrico; 25,50; 12
+```
+
+- Fields are separated by `;`, so the price can use a decimal comma. Spaces around fields are trimmed.
+- 2 to 4 fields: name and price are required; stock defaults to `0`; the url is optional. An empty stock (`Mouse; 10; ; https://...`) means `0`, and an empty or missing url means no image.
+- The reply shows the new product, for example `Producto agregado: #6 Mouse inalámbrico: 25,50 · 12 en stock.`
+- A product created this way also triggers the [Slack alert](#slack-alerts) (same message as `POST /api/v1/products`). A Slack failure never changes the Telegram reply.
+
+#### `/editar`
+
+```
+/editar <id> campo=valor; campo=valor
+/editar 3 precio=19,90; stock=8
+```
+
+- `<id>` is a positive whole number (see `/productos`). Fields: `nombre`, `precio`, `stock`, `imagen` (case-insensitive), at least one, each at most once.
+- Only the given fields change. Each field is split on its first `=`, so a value may contain `=`. `imagen=` (empty) or `imagen=-` removes the image.
+- The reply shows the whole product after the change, for example `Producto actualizado: #3 Mouse: 19,90 · 8 en stock.` An unknown id replies `No existe el producto #N.` Edits do not alert Slack.
+
+#### Validation (same rules as the web form)
+
+| Field | Rule |
+| --- | --- |
+| `nombre` | 1 to 200 characters after trimming; runs of spaces and line breaks become one space |
+| `precio` | Not negative. One decimal comma or dot, at most 2 decimals: `25,50`, `25.5`, `25` are valid; `1.000`, `1,000`, `1e3`, `0x1A`, `1_000` and `Infinity` are not |
+| `stock` | Whole number from 0 to 2147483647 |
+| `imagen` | `http` or `https` URL with a host, no spaces, at most 2048 characters (`javascript:` and other schemes are rejected) |
+
+Every failure replies with a Spanish message that names the field and gives an example; nothing is written.
+
+#### Known limitations
+
+- The duplicate-delivery guard is in memory (see above). After a restart or a Render sleep, Telegram could redeliver an `/agregar` and the product would be created twice. After an unexpected delay, check with `/productos` before sending it again.
+- The database write runs inside the webhook request, before the acknowledgement (it is a quick query); only the reply and the Slack alert are sent from background tasks. If the database is down, the bot replies that it could not answer and nothing is written.
 
 ## Slack alerts
 

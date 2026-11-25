@@ -10,6 +10,8 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 import models
+import product_service
+import slack_alerts
 import telegram_bot
 from catalog_assistant import AssistantQuotaExceeded, AssistantUnavailable
 from database import get_db
@@ -18,6 +20,7 @@ from telegram_bot import (
     MAX_MESSAGE_LENGTH,
     SECRET_TOKEN_HEADER,
     HttpxTelegramSender,
+    InputError,
     TelegramSendError,
     get_telegram_admin_ids,
     get_telegram_assistant,
@@ -578,17 +581,7 @@ def test_productos_releases_the_db_connection(client, sender, assistant, request
 # --- Other commands ----------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "/settings",
-        "/agregar Mouse; 10; 5",
-        "/editar 1 precio=12",
-        "/agregar@CatalogBot Mouse; 10; 5",
-        "/AGREGAR",
-        "/",
-    ],
-)
+@pytest.mark.parametrize("command", ["/settings", "/borrar 1", "/"])
 def test_other_commands_get_the_not_available_reply(
     client, sender, assistant, use_admins, command
 ):
@@ -600,16 +593,6 @@ def test_other_commands_get_the_not_available_reply(
     assert sender.sent == [(CHAT_ID, telegram_bot.UNKNOWN_COMMAND_TEXT)]
     assert assistant.calls == []
     assert "/ayuda" in telegram_bot.UNKNOWN_COMMAND_TEXT
-
-
-def test_unimplemented_admin_commands_do_not_write_to_the_database(
-    client, sender, assistant, use_admins
-):
-    use_admins(CHAT_ID)
-
-    post_update(client, text_update("/agregar Mouse; 10; 5"))
-
-    assert client.get(PRODUCTS_URL).json() == []
 
 
 @pytest.mark.parametrize("command", ["/id", "/productos", "/ayuda", "/agregar x"])
@@ -979,3 +962,700 @@ def test_get_telegram_sender_builds_the_httpx_adapter(telegram_env):
     config = telegram_bot.get_telegram_config()
 
     assert isinstance(get_telegram_sender(config), HttpxTelegramSender)
+
+
+# --- Admin write commands: field validation -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("25,50", 25.5),
+        ("25.50", 25.5),
+        ("25", 25.0),
+        ("0", 0.0),
+        ("0,5", 0.5),
+        ("10.0", 10.0),
+        ("  7  ", 7.0),
+        ("1234567", 1234567.0),
+    ],
+)
+def test_parse_price_accepts_one_decimal_comma_or_dot(raw, expected):
+    assert telegram_bot.parse_price(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "1.000", "1,000", "1,000.50", "1.2.3", "1,5,0", "0x1A", "0b11", "0o7", "1e3",
+        "1E3", "1_000", "Infinity", "inf", "nan", "", "   ", "abc", "5,", ".5", ",5",
+        "１２", "٣", "+5", "5 0", "1.234", "9" * 400,
+    ],
+)
+def test_parse_price_rejects_anything_else(raw):
+    with pytest.raises(InputError, match="precio"):
+        telegram_bot.parse_price(raw)
+
+
+@pytest.mark.parametrize("raw", ["-5", "-0,50", "-0"])
+def test_parse_price_says_a_negative_price_is_not_allowed(raw):
+    with pytest.raises(InputError, match="negativ"):
+        telegram_bot.parse_price(raw)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("0", 0), ("12", 12), (" 5 ", 5), ("2147483647", 2_147_483_647), ("007", 7)],
+)
+def test_parse_stock_accepts_whole_numbers_in_the_integer_range(raw, expected):
+    assert telegram_bot.parse_stock(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["2147483648", "-1", "1.5", "1,5", "1e3", "0x10", "abc", "", "٣", "9" * 5000],
+)
+def test_parse_stock_rejects_everything_else(raw):
+    with pytest.raises(InputError, match="stock"):
+        telegram_bot.parse_stock(raw)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("x", "x"), ("  Mouse  ", "Mouse"), ("a" * 200, "a" * 200), ("Mouse \n  Pro", "Mouse Pro")],
+)
+def test_parse_name_trims_and_collapses_whitespace(raw, expected):
+    assert telegram_bot.parse_name(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n", "a" * 201])
+def test_parse_name_rejects_empty_and_too_long_names(raw):
+    with pytest.raises(InputError, match="nombre"):
+        telegram_bot.parse_name(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://example.com/a.png",
+        "https://example.com/a.png?x=1&y=2",
+        "HTTPS://Example.com/A",
+        "https://example.com/" + "x" * (2048 - len("https://example.com/")),
+    ],
+)
+def test_parse_image_url_accepts_http_and_https(raw):
+    assert telegram_bot.parse_image_url(raw) == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "javascript:alert(1)",
+        "ftp://example.com/a.png",
+        "example.com/a.png",
+        "http://",
+        "https:///a.png",
+        "http://example.com/ a.png",
+        "data:image/png;base64,AAAA",
+        "file:///etc/passwd",
+        "http://[abc",
+        "https://example.com/" + "x" * 2048,
+    ],
+)
+def test_parse_image_url_rejects_everything_else(raw):
+    with pytest.raises(InputError, match="imagen"):
+        telegram_bot.parse_image_url(raw)
+
+
+# --- Admin write commands: parsing ---------------------------------------------
+
+
+def test_parse_add_reads_name_price_stock_and_image():
+    data = telegram_bot.parse_add("Mouse inalámbrico; 25,50; 12; https://example.com/m.png")
+
+    assert (data.name, data.price, data.stock, data.image_url) == (
+        "Mouse inalámbrico", 25.5, 12, "https://example.com/m.png",
+    )
+
+
+def test_parse_add_defaults_stock_to_zero_and_image_to_none():
+    data = telegram_bot.parse_add("Mouse; 10")
+
+    assert (data.stock, data.image_url) == (0, None)
+
+
+def test_parse_add_trims_the_whitespace_around_fields():
+    data = telegram_bot.parse_add("  Mouse  ;\n 10 ;  5  ")
+
+    assert (data.name, data.price, data.stock) == ("Mouse", 10.0, 5)
+
+
+def test_parse_add_lets_the_stock_be_skipped_to_give_an_image():
+    data = telegram_bot.parse_add("Mouse; 10; ; https://example.com/m.png")
+
+    assert (data.stock, data.image_url) == (0, "https://example.com/m.png")
+
+
+def test_parse_add_treats_a_trailing_semicolon_as_no_image():
+    data = telegram_bot.parse_add("Mouse; 10; 5;")
+
+    assert (data.stock, data.image_url) == (5, None)
+
+
+def test_parse_add_keeps_an_equals_sign_inside_the_name():
+    assert telegram_bot.parse_add("A=B; 10").name == "A=B"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "Mouse",
+        "Mouse; 10; 5; https://example.com/a.png; extra",
+        "Mouse; 10; 5;;",
+        ";;;;",
+    ],
+)
+def test_parse_add_replies_with_the_usage_for_a_wrong_field_count(payload):
+    with pytest.raises(InputError) as error:
+        telegram_bot.parse_add(payload)
+
+    assert telegram_bot.ADD_USAGE in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "payload, field",
+    [
+        ("; 10; 5", "nombre"),
+        ("Mouse; ; 5", "precio"),
+        ("Mouse;;", "precio"),
+        ("Mouse; 1.000; 5", "precio"),
+        ("Mouse; -5; 5", "precio"),
+        ("Mouse; 10; -1", "stock"),
+        ("Mouse; 10; 2147483648", "stock"),
+        ("Mouse; 10; 5; javascript:alert(1)", "imagen"),
+        ("x" * 201 + "; 10", "nombre"),
+    ],
+)
+def test_parse_add_names_the_invalid_field(payload, field):
+    with pytest.raises(InputError, match=field):
+        telegram_bot.parse_add(payload)
+
+
+def test_parse_edit_builds_a_partial_change_with_only_the_given_fields():
+    product_id, changes = telegram_bot.parse_edit("3 precio=19,90; stock=8")
+
+    assert product_id == 3
+    assert changes.model_fields_set == {"price", "stock"}
+    assert (changes.price, changes.stock) == (19.9, 8)
+
+
+def test_parse_edit_field_names_are_case_insensitive():
+    _, changes = telegram_bot.parse_edit("3 PRECIO=5; Nombre=Mouse; sTock=2; IMAGEN=-")
+
+    assert changes.model_fields_set == {"price", "name", "stock", "image_url"}
+
+
+def test_parse_edit_splits_each_field_on_the_first_equals_only():
+    _, changes = telegram_bot.parse_edit(
+        "3 nombre=a=b; imagen=https://example.com/a?b=c"
+    )
+
+    assert changes.name == "a=b"
+    assert changes.image_url == "https://example.com/a?b=c"
+
+
+@pytest.mark.parametrize("payload", ["3 imagen=", "3 imagen=-", "3 imagen=  -  "])
+def test_parse_edit_clears_the_image_with_an_empty_value_or_a_dash(payload):
+    _, changes = telegram_bot.parse_edit(payload)
+
+    assert changes.model_fields_set == {"image_url"}
+    assert changes.image_url is None
+
+
+@pytest.mark.parametrize("payload", ["3 precio=5;", "3\nprecio=5", "3   precio=5 ;; "])
+def test_parse_edit_tolerates_newlines_and_stray_semicolons(payload):
+    product_id, changes = telegram_bot.parse_edit(payload)
+
+    assert (product_id, changes.price) == (3, 5.0)
+
+
+@pytest.mark.parametrize(
+    "payload", ["0 precio=5", "-1 precio=5", "abc precio=5", "1.5 precio=5", "9" * 30 + " precio=5"]
+)
+def test_parse_edit_rejects_an_id_that_is_not_a_positive_integer(payload):
+    with pytest.raises(InputError, match="id"):
+        telegram_bot.parse_edit(payload)
+
+
+@pytest.mark.parametrize("payload", ["", "3", "3 ;", "   "])
+def test_parse_edit_replies_with_the_usage_when_nothing_is_given(payload):
+    with pytest.raises(InputError) as error:
+        telegram_bot.parse_edit(payload)
+
+    assert telegram_bot.EDIT_USAGE in str(error.value)
+
+
+def test_parse_edit_lists_the_valid_fields_for_an_unknown_one():
+    with pytest.raises(InputError) as error:
+        telegram_bot.parse_edit("3 color=rojo")
+
+    message = str(error.value)
+    assert "color" in message
+    assert "nombre, precio, stock, imagen" in message
+
+
+def test_parse_edit_rejects_a_repeated_field():
+    with pytest.raises(InputError, match="precio.*dos veces"):
+        telegram_bot.parse_edit("3 precio=5; PRECIO=6")
+
+
+@pytest.mark.parametrize("payload", ["3 precio", "3 precio=5; stock", "3 =5"])
+def test_parse_edit_requires_an_equals_sign_with_a_field_name(payload):
+    with pytest.raises(InputError, match="campo=valor"):
+        telegram_bot.parse_edit(payload)
+
+
+@pytest.mark.parametrize(
+    "payload, field",
+    [
+        ("3 precio=abc", "precio"),
+        ("3 precio=1.000", "precio"),
+        ("3 stock=-1", "stock"),
+        ("3 stock=2147483648", "stock"),
+        ("3 nombre=", "nombre"),
+        ("3 nombre=" + "x" * 201, "nombre"),
+        ("3 imagen=javascript:alert(1)", "imagen"),
+    ],
+)
+def test_parse_edit_names_the_invalid_field(payload, field):
+    with pytest.raises(InputError, match=field):
+        telegram_bot.parse_edit(payload)
+
+
+# --- Admin write commands: through the webhook ---------------------------------
+
+
+ADMIN_ID = 555
+
+
+class FakeNotifier:
+    """In-memory SlackNotifier that records every message."""
+
+    def __init__(self, error=None):
+        self._error = error
+        self.sent = []
+
+    def post_message(self, text):
+        self.sent.append(text)
+        if self._error is not None:
+            raise self._error
+
+
+@pytest.fixture
+def use_notifier():
+    def install(notifier):
+        app.dependency_overrides[slack_alerts.get_slack_notifier] = lambda: notifier
+        return notifier
+
+    yield install
+    app.dependency_overrides.pop(slack_alerts.get_slack_notifier, None)
+
+
+@pytest.fixture
+def admin(use_admins):
+    """Make the default test chat's sender an admin."""
+    use_admins(CHAT_ID)
+
+
+class ForbiddenSession:
+    """A session that fails loudly if anything touches the database."""
+
+    def __getattr__(self, name):
+        if name in {"rollback", "close"}:
+            return lambda: None
+        raise AssertionError(f"the database must not be used (session.{name})")
+
+
+class WriteFailingSession:
+    """A session whose reads and writes fail, like a paused Supabase project."""
+
+    def __init__(self):
+        self.rolled_back = False
+
+    def _fail(self, *args, **kwargs):
+        raise OperationalError("INSERT", {}, Exception("server closed the connection"))
+
+    add = get = commit = execute = refresh = _fail
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        pass
+
+
+def use_session(session):
+    previous = app.dependency_overrides[get_db]
+    app.dependency_overrides[get_db] = lambda: session
+    return previous
+
+
+def stored_products(db):
+    db.expire_all()
+    return db.query(models.Product).order_by(models.Product.id).all()
+
+
+def test_admin_adds_a_product_and_gets_it_back_in_the_list_format(
+    client, sender, assistant, admin, db_session
+):
+    response = post_update(
+        client, text_update("/agregar Mouse inalámbrico; 25,50; 12; https://example.com/m.png")
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == [
+        (CHAT_ID, "Producto agregado: #1 Mouse inalámbrico: 25,50 · 12 en stock.")
+    ]
+    [product] = stored_products(db_session)
+    assert (product.name, float(product.price), product.stock, product.image_url) == (
+        "Mouse inalámbrico", 25.5, 12, "https://example.com/m.png",
+    )
+    assert assistant.calls == []
+
+
+def test_add_without_stock_creates_an_out_of_stock_product(
+    client, sender, assistant, admin, db_session
+):
+    post_update(client, text_update("/agregar Mouse; 10"))
+
+    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: 10,00 · agotado.")]
+    assert stored_products(db_session)[0].stock == 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["/agregar\nMouse; 10; 5", "/agregar@CatalogBot Mouse; 10; 5", "/AGREGAR Mouse; 10; 5"],
+)
+def test_add_accepts_a_newline_the_bot_suffix_and_any_case(
+    client, sender, assistant, admin, db_session, command
+):
+    post_update(client, text_update(command))
+
+    assert [product.name for product in stored_products(db_session)] == ["Mouse"]
+    assert sender.sent[0][1].startswith("Producto agregado: #1 Mouse")
+
+
+def test_admin_edits_a_product_and_sees_the_whole_result(
+    client, sender, assistant, admin, db_session
+):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 25.5, "stock": 12,
+                                    "image_url": "https://example.com/m.png"})
+
+    post_update(client, text_update("/editar 1 precio=19,90; stock=8"))
+
+    assert sender.sent == [(CHAT_ID, "Producto actualizado: #1 Mouse: 19,90 · 8 en stock.")]
+    [product] = stored_products(db_session)
+    assert (product.name, float(product.price), product.stock, product.image_url) == (
+        "Mouse", 19.9, 8, "https://example.com/m.png",
+    )
+
+
+def test_edit_renames_and_clears_the_image(client, sender, assistant, admin, db_session):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 1,
+                                    "image_url": "https://example.com/m.png"})
+
+    post_update(client, text_update("/editar 1 nombre=Mouse Pro; imagen=-"))
+
+    assert sender.sent == [(CHAT_ID, "Producto actualizado: #1 Mouse Pro: 10,00 · 1 en stock.")]
+    [product] = stored_products(db_session)
+    assert (product.name, product.image_url) == ("Mouse Pro", None)
+
+
+def test_edit_of_a_missing_product_says_so(client, sender, assistant, admin, db_session):
+    post_update(client, text_update("/editar 99 stock=1"))
+
+    assert sender.sent == [(CHAT_ID, "No existe el producto #99.")]
+    assert stored_products(db_session) == []
+
+
+@pytest.mark.parametrize(
+    "command, text_part",
+    [
+        ("/agregar", "Uso: /agregar"),
+        ("/agregar Mouse", "Uso: /agregar"),
+        ("/agregar Mouse; 1.000", "precio"),
+        ("/agregar Mouse; 10; 5; javascript:alert(1)", "imagen"),
+        ("/editar", "Uso: /editar"),
+        ("/editar 1", "Uso: /editar"),
+        ("/editar 0 stock=1", "id"),
+        ("/editar 1 color=rojo", "color"),
+        ("/editar 1 precio=0x1A", "precio"),
+    ],
+)
+def test_invalid_input_gets_a_clear_message_and_writes_nothing(
+    client, sender, assistant, admin, db_session, command, text_part
+):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 1})
+
+    response = post_update(client, text_update(command))
+
+    assert response.status_code == 200
+    [(chat_id, text)] = sender.sent
+    assert chat_id == CHAT_ID
+    assert text_part in text
+    assert len(text) <= MAX_MESSAGE_LENGTH
+    [product] = stored_products(db_session)
+    assert (product.name, float(product.price), product.stock) == ("Mouse", 10.0, 1)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/agregar Mouse; 10; 5",
+        "/agregar",
+        "/agregar Mouse; 1.000",
+        "/editar 1 precio=5",
+        "/editar basura",
+        "/agregar@CatalogBot Mouse; 10; 5",
+    ],
+)
+def test_non_admins_are_refused_without_touching_the_database(
+    client, sender, assistant, use_admins, use_notifier, command
+):
+    use_admins(999_999)
+    notifier = use_notifier(FakeNotifier())
+    previous = use_session(ForbiddenSession())
+    try:
+        response = post_update(client, text_update(command))
+    finally:
+        app.dependency_overrides[get_db] = previous
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.ADMIN_ONLY_TEXT)]
+    assert notifier.sent == []
+    assert assistant.calls == []
+
+
+def test_the_refusal_reveals_no_syntax_details():
+    text = telegram_bot.ADMIN_ONLY_TEXT
+
+    assert text == "Solo el administrador puede usar este comando."
+    assert ";" not in text and "precio" not in text and "campo" not in text
+
+
+def test_everyone_is_refused_when_the_allow_list_is_empty(
+    client, sender, assistant, use_admins, db_session
+):
+    use_admins()
+
+    post_update(client, text_update("/agregar Mouse; 10; 5", sender_id=ADMIN_ID))
+    post_update(client, text_update("/editar 1 stock=1", update_id=1002))
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.ADMIN_ONLY_TEXT)] * 2
+    assert stored_products(db_session) == []
+
+
+def test_a_group_chat_id_that_equals_an_admin_id_grants_nothing(
+    client, sender, assistant, use_admins, db_session
+):
+    use_admins(CHAT_ID)  # the allow-list holds an id that is also the chat's id
+
+    post_update(client, text_update("/agregar Mouse; 10; 5", chat_id=CHAT_ID, sender_id=777))
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.ADMIN_ONLY_TEXT)]
+    assert stored_products(db_session) == []
+
+
+def test_a_message_without_a_sender_is_refused(client, sender, assistant, use_admins):
+    use_admins(CHAT_ID)
+    update = text_update("/agregar Mouse; 10; 5")
+    del update["message"]["from"]
+
+    post_update(client, update)
+
+    assert sender.sent == [(CHAT_ID, telegram_bot.ADMIN_ONLY_TEXT)]
+
+
+def test_admin_can_write_from_a_group_where_only_they_are_listed(
+    client, sender, assistant, use_admins, db_session
+):
+    use_admins(ADMIN_ID)
+
+    post_update(client, text_update("/agregar Mouse; 10; 5", chat_id=-1001, sender_id=ADMIN_ID))
+
+    assert sender.sent == [(-1001, "Producto agregado: #1 Mouse: 10,00 · 5 en stock.")]
+
+
+@pytest.mark.parametrize("command", ["/agregar Mouse; 10; 5", "/editar 1 stock=2"])
+def test_database_failure_on_a_write_sends_the_unavailable_text(
+    client, sender, assistant, admin, use_notifier, command
+):
+    notifier = use_notifier(FakeNotifier())
+    session = WriteFailingSession()
+    previous = use_session(session)
+    try:
+        response = post_update(client, text_update(command))
+    finally:
+        app.dependency_overrides[get_db] = previous
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, telegram_bot.UNAVAILABLE_TEXT)]
+    assert session.rolled_back
+    assert notifier.sent == []
+
+
+def test_write_failure_logs_the_chat_id_and_error_class_only(
+    client, sender, assistant, admin, caplog
+):
+    previous = use_session(WriteFailingSession())
+    try:
+        with caplog.at_level(logging.WARNING):
+            post_update(client, text_update("/agregar Secret product; 10; 5"))
+    finally:
+        app.dependency_overrides[get_db] = previous
+
+    assert str(CHAT_ID) in caplog.text
+    assert "OperationalError" in caplog.text
+    assert "server closed the connection" not in caplog.text
+    assert "Secret product" not in caplog.text
+
+
+@pytest.mark.parametrize("command", ["/agregar Mouse; 10; 5", "/editar 1 stock=2"])
+def test_a_write_leaves_no_session_in_a_transaction(
+    client, sender, assistant, admin, request_sessions, command
+):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 1})
+    request_sessions.clear()
+
+    post_update(client, text_update(command))
+
+    assert [session.in_transaction() for session in request_sessions] == [False]
+
+
+# --- Admin write commands: Slack alert ------------------------------------------
+
+
+def test_add_fires_exactly_one_slack_alert_in_the_usual_format(
+    client, sender, assistant, admin, use_notifier
+):
+    notifier = use_notifier(FakeNotifier())
+
+    post_update(client, text_update("/agregar Mouse; 25,50; 12"))
+
+    assert notifier.sent == [slack_alerts.format_product_created("Mouse", 1, 25.5, 12)]
+    assert notifier.sent == ["New product: Mouse (id 1) - price 25.50, stock 12"]
+
+
+def test_the_slack_alert_neutralizes_markup_in_the_name(
+    client, sender, assistant, admin, use_notifier
+):
+    notifier = use_notifier(FakeNotifier())
+
+    post_update(client, text_update("/agregar <!channel> hola & adiós; 1"))
+
+    assert notifier.sent == [
+        "New product: &lt;!channel&gt; hola &amp; adiós (id 1) - price 1.00, stock 0"
+    ]
+
+
+def test_a_failing_slack_notifier_does_not_change_the_telegram_reply(
+    client, sender, assistant, admin, use_notifier, db_session
+):
+    use_notifier(FakeNotifier(error=RuntimeError("slack is down")))
+
+    response = post_update(client, text_update("/agregar Mouse; 10; 5"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: 10,00 · 5 en stock.")]
+    assert len(stored_products(db_session)) == 1
+
+
+def test_add_works_without_a_slack_webhook(client, sender, assistant, admin):
+    response = post_update(client, text_update("/agregar Mouse; 10; 5"))
+
+    assert response.status_code == 200
+    assert sender.sent == [(CHAT_ID, "Producto agregado: #1 Mouse: 10,00 · 5 en stock.")]
+
+
+def test_edit_does_not_fire_a_slack_alert(client, sender, assistant, admin, use_notifier):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10, "stock": 1})
+    notifier = use_notifier(FakeNotifier())
+
+    post_update(client, text_update("/editar 1 stock=2"))
+    post_update(client, text_update("/editar 99 stock=2", update_id=1002))
+
+    assert notifier.sent == []
+
+
+def test_invalid_add_fires_no_slack_alert(client, sender, assistant, admin, use_notifier):
+    notifier = use_notifier(FakeNotifier())
+
+    post_update(client, text_update("/agregar Mouse; abc"))
+
+    assert notifier.sent == []
+
+
+def test_the_slack_alert_runs_without_a_database_session_in_a_transaction(
+    client, sender, assistant, admin, use_notifier, request_sessions
+):
+    states = []
+
+    class ProbeNotifier(FakeNotifier):
+        def post_message(self, text):
+            states.append([session.in_transaction() for session in request_sessions])
+
+    use_notifier(ProbeNotifier())
+
+    post_update(client, text_update("/agregar Mouse; 10; 5"))
+
+    assert states == [[False]]
+
+
+# --- Admin write commands: duplicates and the public API ---------------------------
+
+
+def test_a_redelivered_add_creates_only_one_product(
+    client, sender, assistant, admin, use_notifier, db_session
+):
+    notifier = use_notifier(FakeNotifier())
+
+    first = post_update(client, text_update("/agregar Mouse; 10; 5", update_id=77))
+    second = post_update(client, text_update("/agregar Mouse; 10; 5", update_id=77))
+
+    assert first.status_code == second.status_code == 200
+    assert len(stored_products(db_session)) == 1
+    assert len(sender.sent) == 1
+    assert len(notifier.sent) == 1
+
+
+@pytest.mark.parametrize("method", ["patch", "put", "delete"])
+def test_the_public_api_has_no_route_to_edit_or_delete_products(client, method):
+    client.post(PRODUCTS_URL, json={"name": "Mouse", "price": 10})
+
+    for url in (f"{PRODUCTS_URL}/1", PRODUCTS_URL):
+        assert getattr(client, method)(url).status_code in (404, 405)
+
+
+def test_the_bot_writes_through_the_shared_product_service(
+    client, sender, assistant, admin, monkeypatch
+):
+    calls = []
+    real_create = product_service.create_product
+    monkeypatch.setattr(
+        product_service, "create_product",
+        lambda db, data: calls.append(data.name) or real_create(db, data),
+    )
+
+    post_update(client, text_update("/agregar Mouse; 10; 5"))
+
+    assert calls == ["Mouse"]
+
+
+def test_the_admin_help_text_matches_the_implemented_syntax():
+    section = telegram_bot.ADMIN_HELP_SECTION
+
+    assert telegram_bot.ADD_SYNTAX in section
+    assert telegram_bot.EDIT_SYNTAX in section
+    assert "imagen=-" in section
+    assert len(telegram_bot.help_text(True)) <= MAX_MESSAGE_LENGTH

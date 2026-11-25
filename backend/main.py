@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import models
+import product_service
 import schemas
 import slack_alerts
 import telegram_bot
@@ -119,10 +120,7 @@ def create_product(
     db: DbSession,
     slack: SlackNotifier,
 ):
-    product = models.Product(**payload.model_dump())
-    db.add(product)
-    db.commit()
-    db.refresh(product)
+    product = product_service.create_product(db, payload)
     # Optional Slack alert. The text is built here, so the background task holds
     # no session, and it runs after the response, so it can never delay or fail it.
     background_tasks.add_task(
@@ -166,13 +164,16 @@ def telegram_webhook(
     assistant: TelegramAssistant,
     recent_updates: TelegramRecentUpdates,
     admin_ids: TelegramAdminIds,
+    slack: SlackNotifier,
 ) -> dict[str, bool]:
     """Receive a Telegram update and acknowledge it at once.
 
     Replies are sent from background tasks after the response, because Telegram
     redelivers updates that are not acknowledged quickly and the LLM is slow.
     A redelivered update_id is acknowledged without a reply; the record is in
-    memory, so it is lost on restart (see telegram_bot.RecentUpdates).
+    memory, so it is lost on restart (see telegram_bot.RecentUpdates). An admin
+    write (/agregar, /editar) is a quick query, so it runs inline, before the
+    acknowledgement; only its reply and its Slack alert go to background tasks.
     """
     if (
         update is not None
@@ -190,6 +191,12 @@ def telegram_webhook(
     )
     if isinstance(interpreted, telegram_bot.Reply):
         background_tasks.add_task(telegram_bot.send_safely, sender, chat_id, interpreted.text)
+        return TELEGRAM_ACK
+    if isinstance(interpreted, telegram_bot.AddProduct | telegram_bot.EditProduct):
+        reply, alert = write_product_for_telegram(db, chat_id, interpreted)
+        background_tasks.add_task(telegram_bot.send_safely, sender, chat_id, reply)
+        if alert is not None:
+            background_tasks.add_task(slack_alerts.send_safely, slack, alert)
         return TELEGRAM_ACK
 
     products = read_catalog_for_telegram(db, chat_id)
@@ -210,6 +217,45 @@ def telegram_webhook(
         sender, assistant, chat_id, interpreted.question, products,
     )
     return TELEGRAM_ACK
+
+
+def write_product_for_telegram(
+    db: Session,
+    chat_id: int,
+    command: telegram_bot.AddProduct | telegram_bot.EditProduct,
+) -> tuple[str, str | None]:
+    """Run an admin write; returns (reply text, Slack alert text or None).
+
+    Only a created product alerts Slack. Both texts are built here, from a
+    snapshot, so the background tasks hold no session. The session never stays in
+    a transaction: a failed write is rolled back, and the refresh after a commit
+    began a new transaction that the final rollback ends.
+    """
+    try:
+        if isinstance(command, telegram_bot.AddProduct):
+            row = product_service.create_product(db, command.data)
+        else:
+            row = product_service.update_product(db, command.product_id, command.changes)
+        product = None if row is None else CatalogProduct(
+            id=row.id, name=row.name, price=float(row.price), stock=row.stock
+        )
+    except SQLAlchemyError as error:
+        logger.warning(
+            "Product write failed for Telegram (chat_id=%s, error=%s)",
+            chat_id, type(error).__name__,
+        )
+        return telegram_bot.UNAVAILABLE_TEXT, None
+    finally:
+        db.rollback()
+
+    if product is None:  # Only an edit can miss: create_product always returns a row.
+        return telegram_bot.product_missing_text(command.product_id), None
+    if isinstance(command, telegram_bot.AddProduct):
+        alert = slack_alerts.format_product_created(
+            product.name, product.id, product.price, product.stock
+        )
+        return telegram_bot.product_added_text(product), alert
+    return telegram_bot.product_updated_text(product), None
 
 
 def read_catalog_for_telegram(db: Session, chat_id: int) -> list[CatalogProduct] | None:
